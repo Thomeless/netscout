@@ -1,134 +1,128 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Tomáš Nesrsta
-import { useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { memo, useMemo, useState } from "react";
+import {
+  Button, DrawerBody, DrawerHeader, DrawerHeaderTitle, MessageBar, MessageBarBody, OverlayDrawer, Select, Text, mergeClasses,
+} from "@fluentui/react-components";
+import { Copy20Regular, Delete20Regular, Dismiss24Regular, Globe20Regular, Play20Regular, Stop20Regular } from "@fluentui/react-icons";
 import { api } from "./api";
-import { clearNeighbors, useStore } from "./store";
+import { Card, KeyValues, NARROW, Page, copyText, useCommon, useMediaQuery } from "./common";
+import { clearNeighbors, startNeighbors, stopNeighbors, useStore, type SeenNeighbor } from "./store";
 import { cmpIp } from "./util";
 
 const STALE_MS = 90_000;
 
-export default function Neighbors() {
-  const { neighbors: items } = useStore();
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export default memo(function Neighbors() {
+  const c = useCommon();
+  const { neighbors: items, nb, now } = useStore("neighbors");
+  const narrow = useMediaQuery(NARROW);
   const [selected, setSelected] = useState<string | null>(null);
   const [proto, setProto] = useState("");
-  const [now, setNow] = useState(Date.now());
-  const [warn, setWarn] = useState<string | null>(null);
-
-  useEffect(() => {
-    const un = [
-      listen("neighbors-done", () => setRunning(false)),
-      listen<string>("neighbors-warn", (e) => setWarn(e.payload)),
-    ];
-    api.neighborsRunning().then(setRunning, () => {});
-    const t = setInterval(() => setNow(Date.now()), 5000);
-    return () => {
-      un.forEach((p) => p.then((f) => f()));
-      clearInterval(t);
-    };
-  }, []);
-
-  async function start() {
-    setError(null);
-    setWarn(null);
-    try {
-      await api.startNeighbors();
-      setRunning(true);
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  // Při prvním zobrazení hned začni hledat.
-  useEffect(() => {
-    api.neighborsRunning().then((r) => { if (!r) start(); }, () => {});
-  }, []);
 
   const list = useMemo(
     () =>
       Object.values(items)
         .filter((n) => !proto || n.protocol === proto)
-        .sort((a, b) => (cmpIp(a.ip, b.ip) || a.protocol.localeCompare(b.protocol))),
+        .sort((a, b) => cmpIp(a.ip, b.ip) || a.protocol.localeCompare(b.protocol)),
     [items, proto],
   );
   const protocols = useMemo(() => [...new Set(Object.values(items).map((n) => n.protocol))].sort(), [items]);
   const sel = selected ? items[selected] : null;
+  const detail = sel && <Detail n={sel} />;
 
   return (
-    <div className="cols neighbors">
-      <section className="panel" style={{ padding: 0, overflowX: "auto" }}>
-        <div className="scanbar" style={{ padding: 12 }}>
-          {running ? (
-            <button onClick={() => api.stopNeighbors()}>Zastavit</button>
-          ) : (
-            <button className="primary" onClick={start}>Hledat</button>
-          )}
-          <select value={proto} onChange={(e) => setProto(e.target.value)} style={{ width: 160 }}>
+    <Page
+      title="Neighbors"
+      subtitle={`${nb.running ? "Poslouchám: MNDP, Ubiquiti, SADP, ONVIF, CDP, LLDP" : "Zastaveno"} · ${list.length} zařízení`}
+      actions={
+        <>
+          <Select value={proto} onChange={(_, d) => setProto(d.value)}>
             <option value="">Všechny protokoly</option>
             {protocols.map((p) => <option key={p}>{p}</option>)}
-          </select>
-          <button onClick={() => { clearNeighbors(); setSelected(null); }}>Vyčistit</button>
-          <span className="muted" style={{ alignSelf: "center" }}>
-            {running ? "Poslouchám (MNDP, Ubiquiti, SADP, ONVIF, CDP, LLDP)…" : "Zastaveno"} · {list.length} zařízení
-          </span>
-        </div>
-        {error && <div className="banner err" style={{ margin: 12 }}>{error}</div>}
-        {warn && <div className="banner warn" style={{ margin: 12, borderRadius: 6 }}>{warn}</div>}
-        <table>
-          <thead>
-            <tr><th>Protokol</th><th>IP</th><th>MAC</th><th>Identita</th><th>Model</th><th>Verze</th><th>Rozhraní</th></tr>
-          </thead>
-          <tbody>
-            {list.map((n) => (
-              <tr key={n.key} className={`${selected === n.key ? "sel" : ""} ${now - n.seen > STALE_MS ? "stale" : ""}`} onClick={() => setSelected(n.key)}>
-                <td>{n.protocol}</td>
-                <td className="mono">{n.ip}</td>
-                <td className="mono">{n.mac || "—"}</td>
-                <td>{n.identity || "—"}</td>
-                <td>{n.model || "—"}</td>
-                <td>{n.version || "—"}</td>
-                <td>{n.local_iface || "—"}</td>
-              </tr>
-            ))}
-            {list.length === 0 && (
-              <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>
-                {running ? "Zatím nic nenalezeno. Zařízení se ozývají obvykle do několika sekund." : "Spusť hledání."}
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </section>
+          </Select>
+          <Button icon={<Delete20Regular />} onClick={() => { clearNeighbors(); setSelected(null); }}>Vyčistit</Button>
+          {nb.running ? (
+            <Button icon={<Stop20Regular />} onClick={stopNeighbors}>Zastavit</Button>
+          ) : (
+            <Button appearance="primary" icon={<Play20Regular />} onClick={startNeighbors}>Hledat</Button>
+          )}
+        </>
+      }
+    >
+      {nb.error && <MessageBar intent="error"><MessageBarBody>{nb.error}</MessageBarBody></MessageBar>}
+      {nb.warn && <MessageBar intent="warning"><MessageBarBody>{nb.warn}</MessageBarBody></MessageBar>}
 
-      <section className="panel">
-        {sel ? (
-          <>
-            <div className="row between">
-              <h2>{sel.identity || sel.model || sel.ip}</h2>
-              <div className="row" style={{ margin: 0 }}>
-                {sel.ip && <button onClick={() => api.openWeb(sel.ip, 80)}>Web</button>}
-                {sel.ip && <button onClick={() => navigator.clipboard?.writeText(sel.ip)}>Kopírovat IP</button>}
-              </div>
-            </div>
-            <p className="muted">{sel.protocol}{sel.vendor ? ` · ${sel.vendor}` : ""}</p>
-            <dl className="state" style={{ gridTemplateColumns: "130px 1fr" }}>
-              {sel.fields.map(([k, v], i) => (
-                <div key={i} style={{ display: "contents" }}>
-                  <dt>{k}</dt>
-                  <dd className="mono" style={{ whiteSpace: "pre-wrap" }}>{v}</dd>
-                </div>
+      <div className={c.split}>
+        <Card className={c.scroll}>
+          <table className="ns-table" aria-label="Sousedé">
+            <thead>
+              <tr>
+                <th>Protokol</th>
+                <th>IP</th>
+                <th className={c.hideXNarrow}>MAC</th>
+                <th>Identita</th>
+                <th className={c.hideNarrow}>Model</th>
+                <th className={c.hideNarrow}>Verze</th>
+                <th className={c.hideNarrow}>Rozhraní</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((n) => (
+                <tr key={n.key} className={`${selected === n.key ? "sel" : ""} ${now - n.seen > STALE_MS && false ? "" : ""}`} onClick={() => setSelected(n.key)}>
+                  <td>{n.protocol}</td>
+                  <td className={c.mono}>{n.ip || "—"}</td>
+                  <td className={mergeClasses(c.mono, c.hideXNarrow)}>{n.mac || "—"}</td>
+                  <td>{n.identity || "—"}</td>
+                  <td className={c.hideNarrow}>{n.model || "—"}</td>
+                  <td className={c.hideNarrow}>{n.version || "—"}</td>
+                  <td className={c.hideNarrow}>{n.local_iface || "—"}</td>
+                </tr>
               ))}
-            </dl>
-            <details>
-              <summary className="muted">Surový paket</summary>
-              <pre className="raw">{sel.raw}</pre>
-            </details>
-          </>
+              {list.length === 0 && (
+                <tr>
+                  <td colSpan={7}>
+                    <Text className={c.muted}>{nb.running ? "Zatím nic nenalezeno. Zařízení se ozývají obvykle do několika sekund." : "Spusť hledání."}</Text>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </Card>
+
+        {narrow ? (
+          <OverlayDrawer open={!!sel} position="end" style={{ width: "min(440px, 100vw)" }} onOpenChange={(_, d) => !d.open && setSelected(null)}>
+            <DrawerHeader>
+              <DrawerHeaderTitle action={<Button appearance="subtle" aria-label="Zavřít" icon={<Dismiss24Regular />} onClick={() => setSelected(null)} />}>
+                Soused
+              </DrawerHeaderTitle>
+            </DrawerHeader>
+            <DrawerBody>{detail}</DrawerBody>
+          </OverlayDrawer>
         ) : (
-          <p className="muted">Vyber zařízení v seznamu a uvidíš všechna pole, která vysílá.</p>
+          <Card className={c.pad}>{detail ?? <Text className={c.muted}>Vyber zařízení v seznamu a uvidíš všechna pole, která vysílá.</Text>}</Card>
         )}
-      </section>
+      </div>
+    </Page>
+  );
+});
+
+function Detail({ n }: { n: SeenNeighbor }) {
+  const c = useCommon();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <Text as="h2" weight="semibold" size={500} block>{n.identity || n.model || n.ip}</Text>
+        <Text className={c.muted}>{n.protocol}{n.vendor ? ` · ${n.vendor}` : ""}</Text>
+      </div>
+      <div className={c.actions}>
+        {n.ip && <Button icon={<Globe20Regular />} onClick={() => api.openWeb(n.ip, 80).catch(() => {})}>Web</Button>}
+        {n.ip && <Button icon={<Copy20Regular />} onClick={() => copyText(n.ip)}>Kopírovat IP</Button>}
+      </div>
+      <KeyValues rows={n.fields} />
+      <details>
+        <summary className={c.muted}>Surový paket</summary>
+        <pre className={c.raw}>{n.raw}</pre>
+      </details>
     </div>
   );
 }

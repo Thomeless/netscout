@@ -11,6 +11,7 @@ a z `ui/node_modules` (jen balíčky, které se dostanou do aplikace); znění l
 | Databáze výrobců podle MAC (`src-tauri/resources/oui.csv`) | data IEEE Registration Authority | veřejný registr, zdroj <https://standards-oui.ieee.org/oui/oui.csv> |
 | Npcap (volitelné, pro CDP/LLDP) | licence Npcap | **není součástí instalátoru**, uživatel si ho instaluje sám; `wpcap.dll` se jen načítá za běhu |
 | Komponenty Tauri a WebView2 | MIT / Apache-2.0 / licence Microsoftu | WebView2 je součást Windows |
+| Ikony Fluent UI (`@fluentui/react-icons`) | MIT | součástí sestavení |
 
 ## Rust (269 balíčků)
 
@@ -288,13 +289,101 @@ Přehled licencí: MIT OR Apache-2.0 × 95, MIT × 40, MIT OR Apache-2.0 (*) × 
 | zip | 9.1.3 | MIT |
 | zmij | 1.0.23 | MIT |
 
-## JavaScript / TypeScript (6 balíčků)
+## JavaScript / TypeScript (94 balíčků)
 
 | Balíček | Verze | Licence |
 |---|---|---|
+| @babel/runtime | 7.29.10 | MIT |
+| @emotion/hash | 0.9.2 | MIT |
+| @floating-ui/core | 1.8.0 | MIT |
+| @floating-ui/devtools | 0.2.3 | MIT |
+| @floating-ui/dom | 1.8.0 | MIT |
+| @floating-ui/utils | 0.2.12 | MIT |
+| @fluentui/keyboard-keys | 9.0.9 | MIT |
+| @fluentui/priority-overflow | 9.4.3 | MIT |
+| @fluentui/react-accordion | 9.12.5 | MIT |
+| @fluentui/react-alert | 9.0.2-beta.1 | MIT |
+| @fluentui/react-aria | 9.17.16 | MIT |
+| @fluentui/react-avatar | 9.11.9 | MIT |
+| @fluentui/react-badge | 9.5.7 | MIT |
+| @fluentui/react-breadcrumb | 9.4.8 | MIT |
+| @fluentui/react-button | 9.11.3 | MIT |
+| @fluentui/react-card | 9.7.4 | MIT |
+| @fluentui/react-carousel | 9.9.16 | MIT |
+| @fluentui/react-checkbox | 9.6.6 | MIT |
+| @fluentui/react-color-picker | 9.3.3 | MIT |
+| @fluentui/react-combobox | 9.17.8 | MIT |
+| @fluentui/react-components | 9.75.0 | MIT |
+| @fluentui/react-context-selector | 9.2.21 | MIT |
+| @fluentui/react-dialog | 9.18.6 | MIT |
+| @fluentui/react-divider | 9.7.6 | MIT |
+| @fluentui/react-drawer | 9.13.5 | MIT |
+| @fluentui/react-field | 9.5.6 | MIT |
+| @fluentui/react-icons | 2.0.344 | MIT |
+| @fluentui/react-image | 9.4.6 | MIT |
+| @fluentui/react-infobutton | 9.0.1-beta.1 | MIT |
+| @fluentui/react-infolabel | 9.4.28 | MIT |
+| @fluentui/react-input | 9.8.8 | MIT |
+| @fluentui/react-jsx-runtime | 9.4.7 | MIT |
+| @fluentui/react-label | 9.4.6 | MIT |
+| @fluentui/react-link | 9.8.6 | MIT |
+| @fluentui/react-list | 9.7.0 | MIT |
+| @fluentui/react-menu | 9.25.8 | MIT |
+| @fluentui/react-message-bar | 9.7.9 | MIT |
+| @fluentui/react-motion | 9.16.5 | MIT |
+| @fluentui/react-motion-components-preview | 0.15.10 | MIT |
+| @fluentui/react-nav | 9.4.9 | MIT |
+| @fluentui/react-overflow | 9.9.5 | MIT |
+| @fluentui/react-persona | 9.7.11 | MIT |
+| @fluentui/react-popover | 9.14.10 | MIT |
+| @fluentui/react-portal | 9.8.17 | MIT |
+| @fluentui/react-positioning | 9.23.4 | MIT |
+| @fluentui/react-progress | 9.5.7 | MIT |
+| @fluentui/react-provider | 9.22.23 | MIT |
+| @fluentui/react-radio | 9.6.7 | MIT |
+| @fluentui/react-rating | 9.4.7 | MIT |
+| @fluentui/react-search | 9.4.8 | MIT |
+| @fluentui/react-select | 9.5.7 | MIT |
+| @fluentui/react-shared-contexts | 9.26.4 | MIT |
+| @fluentui/react-skeleton | 9.7.7 | MIT |
+| @fluentui/react-slider | 9.6.8 | MIT |
+| @fluentui/react-spinbutton | 9.6.8 | MIT |
+| @fluentui/react-spinner | 9.8.7 | MIT |
+| @fluentui/react-swatch-picker | 9.6.3 | MIT |
+| @fluentui/react-switch | 9.7.7 | MIT |
+| @fluentui/react-table | 9.19.23 | MIT |
+| @fluentui/react-tabs | 9.12.6 | MIT |
+| @fluentui/react-tabster | 9.26.19 | MIT |
+| @fluentui/react-tag-picker | 9.10.6 | MIT |
+| @fluentui/react-tags | 9.9.8 | MIT |
+| @fluentui/react-teaching-popover | 9.7.9 | MIT |
+| @fluentui/react-text | 9.6.21 | MIT |
+| @fluentui/react-textarea | 9.7.8 | MIT |
+| @fluentui/react-theme | 9.2.2 | MIT |
+| @fluentui/react-toast | 9.8.5 | MIT |
+| @fluentui/react-toolbar | 9.8.7 | MIT |
+| @fluentui/react-tooltip | 9.10.8 | MIT |
+| @fluentui/react-tree | 9.16.10 | MIT |
+| @fluentui/react-utilities | 9.27.0 | MIT |
+| @fluentui/react-virtualizer | 9.0.0-alpha.116 | MIT |
+| @fluentui/tokens | 1.0.0-alpha.24 | MIT |
+| @griffel/core | 1.21.4 | MIT |
+| @griffel/react | 1.7.8 | MIT |
+| @griffel/style-types | 1.4.3 | MIT |
+| @swc/helpers | 0.5.23 | Apache-2.0 |
 | @tauri-apps/api | 2.12.4 | Apache-2.0 OR MIT |
 | @tauri-apps/plugin-process | 2.4.0 | MIT OR Apache-2.0 |
 | @tauri-apps/plugin-updater | 2.14.1 | MIT OR Apache-2.0 |
+| csstype | 3.2.3 | MIT |
+| embla-carousel | 8.6.0 | MIT |
+| embla-carousel-autoplay | 8.6.0 | MIT |
+| embla-carousel-fade | 8.6.0 | MIT |
+| keyborg | 3.498.0 | MIT |
 | react | 19.3.1 | MIT |
 | react-dom | 19.3.1 | MIT |
+| rtl-css-js | 1.16.1 | MIT |
 | scheduler | 0.28.0 | MIT |
+| stylis | 4.4.0 | MIT |
+| tabster | 8.8.1 | MIT |
+| tslib | 2.8.1 | 0BSD |
+| use-sync-external-store | 1.7.0 | MIT |

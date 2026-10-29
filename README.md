@@ -1,6 +1,6 @@
 # NetScout
 
-Nástroj pro IT adminy a správce sítí (Windows, Rust + Tauri + React): sken sítě, neighbour discovery výrobců síťové techniky a rychlé přepínání IP profilů na síťových kartách.
+Nástroj pro IT adminy a správce sítí (Windows, Rust + Tauri + React, Fluent UI): sken sítě, neighbour discovery výrobců síťové techniky a rychlé přepínání IP profilů na síťových kartách.
 
 **Autor:** Tomáš Nesrsta ([@Thomeless](https://github.com/Thomeless)) · **Licence:** [GNU AGPL-3.0](LICENSE) · Copyright (C) 2026 Tomáš Nesrsta
 
@@ -40,7 +40,8 @@ Výsledek je v `target/release/bundle/nsis/`.
 - `src-tauri/src/l2cap.rs` – zachytávání CDP/LLDP; `wpcap.dll` se načítá za běhu, bez Npcap SDK
 - `src-tauri/src/inventory.rs`, `profiles.rs` – ukládání do datové složky aplikace (JSON)
 - `src-tauri/resources/oui.csv` – databáze výrobců z IEEE, zabudovaná do programu
-- `ui/` – React frontend; sken a sousedé se sdílí přes `ui/src/store.ts`
+- `src-tauri/src/firewall.rs` – pravidlo příchozího UDP ve Windows Firewallu jen pro NetScout (s právy správce, aby se systém nevyptával při každém spuštění)
+- `ui/` – React + Fluent UI, responzivní rozložení; sken a sousedé se sdílí přes `ui/src/store.ts`
 
 Plán a průzkum trhu: [docs/PLAN.md](docs/PLAN.md).
 

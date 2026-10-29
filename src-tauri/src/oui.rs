@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Manager};
 
 static EMBEDDED: &[u8] = include_bytes!("../resources/oui.csv");
@@ -35,7 +36,13 @@ fn split_csv(line: &str) -> Vec<String> {
     out
 }
 
-pub fn load(app: &AppHandle) -> Db {
+/// Databáze se při prvním použití načte a pak se sdílí (40 tisíc řádků se neparsuje opakovaně).
+pub fn load(app: &AppHandle) -> Arc<Db> {
+    static CACHE: OnceLock<Arc<Db>> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(parse(app))).clone()
+}
+
+fn parse(app: &AppHandle) -> Db {
     let mut db = Db::new();
     // Vlastní oui.csv v datové složce má přednost před vestavěným (IEEE, stažen při vývoji).
     let text = path(app)
