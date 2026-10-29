@@ -2,9 +2,12 @@
 // Copyright (C) 2026 Tomáš Nesrsta
 //! IP sken lokální sítě: ARP (SendARP), reverzní DNS, základní TCP porty, výrobce z OUI.
 
+use crate::mdns::{self, MdnsInfo};
+use crate::ssdp::{self, UpnpInfo};
 use crate::{netcfg, oui};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,7 +37,18 @@ pub struct Host {
     ip: String,
     mac: String,
     vendor: Option<String>,
+    /// Reverzní DNS.
     hostname: Option<String>,
+    /// Nejlepší dostupné jméno (mDNS, UPnP, titulek webu).
+    name: Option<String>,
+    /// Model zařízení (mDNS TXT, UPnP).
+    model: Option<String>,
+    /// Čitelný popis služeb, které zařízení nabízí (mDNS, UPnP).
+    services: Vec<String>,
+    web_title: Option<String>,
+    web_server: Option<String>,
+    /// Soukromá (náhodná) MAC adresa: telefony a tablety ji používají místo skutečné, výrobce nelze určit.
+    private_mac: bool,
     kind: Option<String>,
     ports: Vec<u16>,
     latency_ms: u32,
@@ -153,24 +167,54 @@ fn reverse_dns(ip: Ipv4Addr) -> Option<String> {
     rx.recv_timeout(Duration::from_millis(1500)).ok().flatten().filter(|h| h.parse::<IpAddr>().is_err())
 }
 
-/// Hrubý odhad typu zařízení z otevřených portů a výrobce.
-fn guess_kind(vendor: Option<&str>, ports: &[u16]) -> Option<String> {
+/// Odhad typu zařízení z výrobce, otevřených portů a toho, co o sobě zařízení řeklo (mDNS, UPnP).
+fn guess_kind(vendor: Option<&str>, ports: &[u16], mdns: Option<&MdnsInfo>, upnp: Option<&UpnpInfo>, private_mac: bool) -> Option<String> {
     let v = vendor.unwrap_or("").to_lowercase();
     let has = |p: u16| ports.contains(&p);
-    let kind = if v.contains("mikrotik") || v.contains("routerboard") || has(8291) || has(8728) {
+    let svc = |name: &str| mdns.is_some_and(|m| m.services.iter().any(|s| s.contains(name)));
+    let model = [mdns.and_then(|m| m.model.as_deref()), upnp.and_then(|u| u.model_name.as_deref())]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let maker = upnp.and_then(|u| u.manufacturer.as_deref()).unwrap_or("").to_lowercase();
+    let is = |needles: &[&str]| needles.iter().any(|n| v.contains(n) || model.contains(n) || maker.contains(n));
+
+    let kind = if svc("_ipp") || svc("_printer") || svc("_pdl-datastream") || svc("_scanner") || has(9100) || is(&["laserjet", "officejet", "deskjet", "printer", "tiskárn"]) {
+        "Tiskárna / multifunkce"
+    } else if v.contains("mikrotik") || v.contains("routerboard") || ((has(8291) || has(8728)) && vendor.is_none()) {
         "MikroTik / router"
     } else if v.contains("hikvision") || v.contains("dahua") || has(554) || has(8000) || has(37777) {
         "Kamera / NVR"
+    } else if svc("_googlecast") && (model.contains("nest") || model.contains("home") || model.contains("chromecast")) {
+        "Google Nest / Chromecast"
+    } else if svc("_googlecast") || svc("_androidtvremote") {
+        "Chromecast / Android TV"
+    } else if svc("_airplay") || svc("_companion-link") || model.contains("appletv") {
+        "Apple TV / Apple zařízení"
+    } else if svc("_hap") || svc("_homekit") || svc("_matter") {
+        "Chytrá domácnost"
+    } else if svc("_homeconnect") || is(&["bsh", "bosch", "siemens", "neff", "gaggenau"]) {
+        "Spotřebič Bosch / BSH"
     } else if v.contains("ubiquiti") {
         "Ubiquiti zařízení"
     } else if v.contains("cisco") || v.contains("juniper") || v.contains("aruba") {
         "Síťový prvek"
-    } else if has(9100) {
-        "Tiskárna"
     } else if has(3389) {
         "Windows (RDP)"
-    } else if has(445) || has(139) {
-        "Windows / SMB"
+    } else if svc("_smb") || has(445) || has(139) {
+        "Počítač / úložiště (SMB)"
+    } else if v.contains("espressif") {
+        "IoT zařízení (ESP)"
+    } else if ["nothing technology", "oneplus", "oppo", "vivo", "motorola", "samsung", "honor", "realme"].iter().any(|k| v.contains(k)) {
+        "Mobil / tablet"
+    } else if v.contains("xiaomi") {
+        "Zařízení Xiaomi (mobil / IoT)"
+    } else if v.contains("apple") {
+        "Zařízení Apple"
+    } else if private_mac && ports.is_empty() {
+        "Mobil / tablet (soukromá MAC)"
     } else if has(22) {
         "Linux / SSH zařízení"
     } else if has(80) || has(443) || has(8080) {
@@ -179,6 +223,42 @@ fn guess_kind(vendor: Option<&str>, ports: &[u16]) -> Option<String> {
         return None;
     };
     Some(kind.to_string())
+}
+
+/// `Server` a `<title>` úvodní stránky; jen pro rychlé určení typu zařízení (tiskárny, kamery, brány).
+fn http_probe(ip: Ipv4Addr, port: u16) -> (Option<String>, Option<String>) {
+    let addr = SocketAddr::new(IpAddr::V4(ip), port);
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(700)) else { return (None, None) };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(1000)));
+    if s.write_all(format!("GET / HTTP/1.0\r\nHost: {ip}\r\nUser-Agent: NetScout\r\nConnection: close\r\n\r\n").as_bytes()).is_err() {
+        return (None, None);
+    }
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 2048];
+    while buf.len() < 8192 {
+        match s.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    parse_http(&String::from_utf8_lossy(&buf))
+}
+
+fn parse_http(resp: &str) -> (Option<String>, Option<String>) {
+    let server = resp
+        .lines()
+        .take_while(|l| !l.trim().is_empty())
+        .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("server")).map(|(_, v)| v.trim().to_string()))
+        .filter(|v| !v.is_empty());
+    let lower = resp.to_lowercase();
+    let title = lower.find("<title").and_then(|i| {
+        let start = lower[i..].find('>')? + i + 1;
+        let end = lower[start..].find("</title")? + start;
+        // Pozice ve zmenšené kopii odpovídají původnímu textu (bez ohledu na velikost písmen).
+        let t = resp.get(start..end)?.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!t.is_empty()).then(|| t.chars().take(80).collect())
+    });
+    (title, server)
 }
 
 fn fmt_mac(m: &[u8; 6]) -> String {
@@ -229,11 +309,28 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
     (m[0] & 1 == 0).then_some(m)
 }
 
+/// Výsledek průzkumu: zařízení z ARP tabulky a co o sobě řekla přes mDNS a UPnP.
+struct Discovered {
+    list: Vec<(u32, [u8; 6])>,
+    mdns: HashMap<Ipv4Addr, MdnsInfo>,
+    upnp: HashMap<Ipv4Addr, UpnpInfo>,
+}
+
 /// Najde živá zařízení v lokální podsíti. `SendARP` se při souběžném použití ukázal jako nespolehlivý
 /// (ARP dotazy se ztrácely a výsledky se mezi běhy lišily), proto systém donutíme poslat ARP dotazy sám:
 /// prázdný UDP datagram na každou adresu spustí překlad adresy v síťovém zásobníku (s jeho vlastním
-/// opakováním) a pak přečteme ARP tabulku. Nevyřešené adresy se „šťouchnou“ ještě jednou.
-fn discover(src: Ipv4Addr, s: u32, e: u32, cancelled: &dyn Fn() -> bool, poked: &dyn Fn()) -> Vec<(u32, [u8; 6])> {
+/// opakováním) a pak přečteme ARP tabulku. Nevyřešené adresy se „šťouchnou“ opakovaně.
+/// Mezitím se paralelně ptáme přes mDNS a UPnP, aby se zařízení poznala podle toho, co o sobě říkají.
+/// Důkladný režim čeká déle, aby se ozvala i zařízení v úsporném režimu (spotřebiče, tiskárny, telefony).
+fn discover(
+    src: Ipv4Addr,
+    s: u32,
+    e: u32,
+    thorough: bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    poked: &dyn Fn(),
+    early: &dyn Fn(u32, [u8; 6]),
+) -> Discovered {
     let sock = UdpSocket::bind((src, 0)).ok();
     let poke = |skip: &HashSet<u32>| {
         let Some(sock) = &sock else { return };
@@ -253,20 +350,36 @@ fn discover(src: Ipv4Addr, s: u32, e: u32, cancelled: &dyn Fn() -> bool, poked: 
         }
     };
     let in_range = || arp_table().into_iter().filter(|(ip, _)| (s..=e).contains(ip)).collect::<Vec<_>>();
+    let pauses: &[u64] = if thorough { &[3000, 3000, 3000, 3000, 3000, 3000, 2000] } else { &[2500, 2500, 2000] };
+    let probe_time = Duration::from_millis(pauses.iter().sum::<u64>().saturating_sub(1500));
 
-    poke(&HashSet::new());
-    poked();
-    for pause in [2500, 2500, 2000] {
-        wait(pause);
-        let resolved: HashSet<u32> = in_range().iter().map(|(ip, _)| *ip).collect();
-        if pause != 2000 {
-            poke(&resolved);
+    let (mdns, upnp, list) = std::thread::scope(|scope| {
+        let m = scope.spawn(|| mdns::probe(src, probe_time, cancelled));
+        let u = scope.spawn(|| ssdp::probe(src, probe_time, cancelled));
+        poke(&HashSet::new());
+        poked();
+        let mut announced: HashSet<u32> = HashSet::new();
+        for (i, pause) in pauses.iter().enumerate() {
+            wait(*pause);
+            // Nově nalezená zařízení se ukážou hned, doplnění údajů přijde po skončení průzkumu.
+            let current = in_range();
+            for (ip, mac) in &current {
+                if announced.insert(*ip) {
+                    early(*ip, *mac);
+                }
+            }
+            if i + 1 < pauses.len() {
+                let resolved: HashSet<u32> = current.iter().map(|(ip, _)| *ip).collect();
+                poke(&resolved);
+            }
         }
-    }
-    in_range()
+        let (m, u) = (m.join().unwrap_or_default(), u.join().unwrap_or_default());
+        (m, u, in_range())
+    });
+    Discovered { list, mdns, upnp }
 }
 
-pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String) -> Result<(), String> {
+pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String, thorough: bool) -> Result<(), String> {
     if ctl.running.swap(true, Ordering::SeqCst) {
         return Err("Sken již běží".into());
     }
@@ -297,10 +410,41 @@ pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String) -> Result<(),
         };
 
         // Adresa je projitá hned po rozeslání dotazů; zbytek času běží čekání na odpovědi.
-        let mut list = discover(src, s, e, &cancelled, &|| {
-            done.store(n, Ordering::SeqCst);
-            progress();
-        });
+        let disc = discover(
+            src,
+            s,
+            e,
+            thorough,
+            &cancelled,
+            &|| {
+                done.store(n, Ordering::SeqCst);
+                progress();
+            },
+            &|v, mac| {
+                let vendor = oui::lookup(&db, &mac);
+                let private_mac = mac[0] & 2 != 0;
+                let _ = app.emit(
+                    "scan-host",
+                    Host {
+                        ip: Ipv4Addr::from(v).to_string(),
+                        mac: fmt_mac(&mac),
+                        kind: guess_kind(vendor.as_deref(), &[], None, None, private_mac),
+                        vendor,
+                        hostname: None,
+                        name: None,
+                        model: None,
+                        services: vec![],
+                        web_title: None,
+                        web_server: None,
+                        private_mac,
+                        ports: vec![],
+                        latency_ms: 0,
+                    },
+                );
+            },
+        );
+        let (mdns_info, upnp_info) = (disc.mdns, disc.upnp);
+        let mut list = disc.list;
         // Vlastní adresy počítače systém v ARP tabulce nemá.
         for i in ifaces.iter().filter(|i| i.status == "Up") {
             for a in &i.addresses {
@@ -327,22 +471,60 @@ pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String) -> Result<(),
                     let (v, mac) = list[k];
                     let ip = Ipv4Addr::from(v);
                     let vendor = oui::lookup(&db, &mac);
+                    let (mdns, upnp) = (mdns_info.get(&ip), upnp_info.get(&ip));
+                    let private_mac = mac[0] & 2 != 0;
+                    let model = mdns
+                        .and_then(|m| m.model.clone())
+                        .or_else(|| upnp.and_then(|u| u.model_name.clone()).map(|m| match upnp.and_then(|u| u.manufacturer.as_deref()) {
+                            Some(maker) if !m.to_lowercase().contains(&maker.to_lowercase()) => format!("{maker} {m}"),
+                            _ => m,
+                        }));
+                    let mut services: Vec<String> = mdns.map(|m| m.services.iter().map(|x| mdns::describe_service(x)).collect()).unwrap_or_default();
+                    services.sort();
+                    services.dedup();
+                    if upnp.is_some() {
+                        services.push("UPnP".into());
+                    }
+                    let local_name = |h: &String| h.trim_end_matches(".local").to_string();
+                    let mut name = mdns
+                        .and_then(|m| m.friendly.clone().or_else(|| m.hostnames.iter().next().map(local_name)))
+                        .or_else(|| upnp.and_then(|u| u.friendly_name.clone()));
                     // Nejdřív zařízení hned ukážeme se základními údaji, doplnění portů a jména přijde chvíli po něm.
                     let mut host = Host {
                         ip: ip.to_string(),
                         mac: fmt_mac(&mac),
-                        kind: guess_kind(vendor.as_deref(), &[]),
+                        kind: guess_kind(vendor.as_deref(), &[], mdns, upnp, private_mac),
                         vendor,
                         hostname: None,
+                        name: name.clone(),
+                        model: model.clone(),
+                        services: services.clone(),
+                        web_title: None,
+                        web_server: None,
+                        private_mac,
                         ports: vec![],
                         latency_ms: 0,
                     };
                     let _ = app.emit("scan-host", host.clone());
                     let (ports, latency) = open_ports(ip);
                     host.latency_ms = latency.unwrap_or(0);
-                    host.kind = guess_kind(host.vendor.as_deref(), &ports);
-                    host.ports = ports;
                     host.hostname = reverse_dns(ip);
+                    if let Some(port) = [80u16, 8080, 8000].into_iter().find(|p| ports.contains(p)) {
+                        let (title, server) = http_probe(ip, port);
+                        host.web_title = title;
+                        host.web_server = server;
+                    }
+                    if name.is_none() {
+                        let useful = |t: &String| {
+                            t.len() > 2 && !["error", "index", "untitled", "document", "home", "welcome", "login", "not found", "unauthorized"].iter().any(|g| t.to_lowercase().starts_with(g))
+                        };
+                        name = host.web_title.clone().filter(useful).or_else(|| host.hostname.clone());
+                        host.name = name;
+                    }
+                    host.kind = guess_kind(host.vendor.as_deref(), &ports, mdns, upnp, private_mac).or_else(|| {
+                        host.web_title.as_deref().filter(|t| ["hp ", "laserjet", "officejet", "printer"].iter().any(|k| t.to_lowercase().contains(k))).map(|_| "Tiskárna / multifunkce".to_string())
+                    });
+                    host.ports = ports;
                     let _ = app.emit("scan-host", host);
                     done.fetch_add(1, Ordering::SeqCst);
                     progress();
@@ -376,6 +558,29 @@ mod tests {
         assert!(r("10.0.0.0/8").is_err());
         assert!(r("10.0.0.9-3").is_err());
         assert!(r("abc").is_err());
+    }
+
+    #[test]
+    fn http_title_and_server() {
+        let (t, srv) = parse_http("HTTP/1.0 200 OK\r\nServer: HP HTTP Server; HP Color LaserJet MFP M477fdn\r\n\r\n<html><HEAD><TITLE> HP Color LaserJet\n MFP M477fdn </TITLE></HEAD>");
+        assert_eq!(t.as_deref(), Some("HP Color LaserJet MFP M477fdn"));
+        assert_eq!(srv.as_deref(), Some("HP HTTP Server; HP Color LaserJet MFP M477fdn"));
+        assert_eq!(parse_http("garbage"), (None, None));
+    }
+
+    #[test]
+    fn kind_from_mdns_and_private_mac() {
+        let mut m = MdnsInfo::default();
+        m.services.insert("_ipp._tcp".into());
+        assert_eq!(guess_kind(None, &[], Some(&m), None, false).as_deref(), Some("Tiskárna / multifunkce"));
+        assert_eq!(guess_kind(None, &[], None, None, true).as_deref(), Some("Mobil / tablet (soukromá MAC)"));
+        assert_eq!(guess_kind(Some("BSH Hausgeraete GmbH"), &[], None, None, false).as_deref(), Some("Spotřebič Bosch / BSH"));
+        assert_eq!(guess_kind(None, &[], None, None, false), None);
+        // HP tiskárna s otevřeným portem 8291 není MikroTik.
+        assert_eq!(guess_kind(Some("Hewlett Packard"), &[80, 8291, 9100], None, None, false).as_deref(), Some("Tiskárna / multifunkce"));
+        assert_eq!(guess_kind(Some("Hewlett Packard"), &[8291], None, None, false), None);
+        assert_eq!(guess_kind(Some("Routerboard.com"), &[], None, None, false).as_deref(), Some("MikroTik / router"));
+        assert_eq!(guess_kind(Some("Nothing Technology Limited"), &[], None, None, false).as_deref(), Some("Mobil / tablet"));
     }
 
     #[test]
@@ -414,7 +619,7 @@ mod tests {
         let base = u32::from(src) & !0xff;
         for run in 1..=3 {
             let t = Instant::now();
-            let found = discover(src, base + 1, base + 254, &|| false, &|| {});
+            let found = discover(src, base + 1, base + 254, false, &|| false, &|| {}, &|_, _| {}).list;
             let mut ips: Vec<String> = found.iter().map(|(ip, _)| Ipv4Addr::from(*ip).to_string().rsplit('.').next().unwrap().to_string()).collect();
             ips.sort_by_key(|x| x.parse::<u32>().unwrap());
             println!("běh {run}: {} zařízení za {} ms: {}", found.len(), t.elapsed().as_millis(), ips.join(","));

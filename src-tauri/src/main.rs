@@ -5,6 +5,8 @@
 mod firewall;
 mod inventory;
 mod l2cap;
+mod mdns;
+mod mikrotik;
 mod neighbors;
 mod netcfg;
 mod oui;
@@ -12,6 +14,7 @@ mod proto;
 mod profiles;
 mod ps;
 mod scan;
+mod ssdp;
 
 use neighbors::NeighborControl;
 use netcfg::Iface;
@@ -94,8 +97,43 @@ async fn inventory_forget(app: AppHandle, mac: String) -> Result<inventory::Db, 
 }
 
 #[tauri::command]
-async fn start_scan(app: AppHandle, ctl: State<'_, Arc<ScanControl>>, range: String) -> Result<(), String> {
-    scan::start(app, ctl.inner().clone(), range)
+async fn mikrotik_settings(app: AppHandle) -> mikrotik::Settings {
+    mikrotik::settings(&app)
+}
+
+/// Uloží adresu a uživatele routeru; heslo jen pokud je zadané.
+#[tauri::command]
+async fn mikrotik_save(app: AppHandle, host: String, user: String, password: Option<String>) -> Result<(), String> {
+    mikrotik::save(&app, &host, &user, password.as_deref())
+}
+
+#[tauri::command]
+async fn mikrotik_clear(app: AppHandle) -> Result<(), String> {
+    mikrotik::clear(&app)
+}
+
+/// Vyzkouší přihlášení; bez zadaného hesla použije uložené. Vrací počet leasů.
+#[tauri::command]
+async fn mikrotik_test(app: AppHandle, host: String, user: String, password: Option<String>) -> Result<usize, String> {
+    let password = match password.filter(|p| !p.is_empty()) {
+        Some(p) => p,
+        None => mikrotik::credentials(&app).map(|c| c.2).ok_or("Heslo není uloženo")?,
+    };
+    mikrotik::fetch_leases(&host, &user, &password).map(|l| l.len())
+}
+
+/// DHCP leasy z uloženého routeru; bez nastavení vrací prázdný seznam.
+#[tauri::command]
+async fn mikrotik_leases(app: AppHandle) -> Result<Vec<mikrotik::Lease>, String> {
+    match mikrotik::credentials(&app) {
+        Some((host, user, pass)) => mikrotik::fetch_leases(&host, &user, &pass),
+        None => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+async fn start_scan(app: AppHandle, ctl: State<'_, Arc<ScanControl>>, range: String, thorough: bool) -> Result<(), String> {
+    scan::start(app, ctl.inner().clone(), range, thorough)
 }
 
 #[tauri::command]
@@ -159,6 +197,11 @@ fn main() {
             inventory_seen,
             inventory_update,
             inventory_forget,
+            mikrotik_settings,
+            mikrotik_save,
+            mikrotik_clear,
+            mikrotik_test,
+            mikrotik_leases,
             start_scan,
             cancel_scan,
             start_neighbors,

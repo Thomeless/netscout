@@ -34,6 +34,14 @@ export interface Host {
   mac: string;
   vendor: string | null;
   hostname: string | null;
+  /** Nejlepší dostupné jméno (mDNS, UPnP, titulek webu, reverzní DNS). */
+  name: string | null;
+  model: string | null;
+  services: string[];
+  web_title: string | null;
+  web_server: string | null;
+  /** Soukromá (náhodná) MAC, výrobce nelze určit. */
+  private_mac: boolean;
   kind: string | null;
   ports: number[];
   latency_ms: number;
@@ -73,7 +81,31 @@ export interface SeenEntry {
   kind: string;
 }
 
+export interface Lease {
+  mac: string;
+  address: string;
+  host_name: string;
+  class_id: string;
+  client_id: string;
+  status: string;
+  server: string;
+  comment: string;
+  last_seen: string;
+  dynamic: boolean;
+}
+
+export interface MikrotikSettings {
+  host: string;
+  user: string;
+  has_password: boolean;
+}
+
 export const api = {
+  mikrotikSettings: () => invoke<MikrotikSettings>("mikrotik_settings"),
+  mikrotikSave: (host: string, user: string, password: string | null) => invoke<void>("mikrotik_save", { host, user, password }),
+  mikrotikClear: () => invoke<void>("mikrotik_clear"),
+  mikrotikTest: (host: string, user: string, password: string | null) => invoke<number>("mikrotik_test", { host, user, password }),
+  mikrotikLeases: () => invoke<Lease[]>("mikrotik_leases"),
   inventoryLoad: () => invoke<Record<string, Meta>>("inventory_load"),
   inventorySeen: (seen: SeenEntry[]) => invoke<Record<string, Meta>>("inventory_seen", { seen }),
   inventoryUpdate: (mac: string, label: string, note: string, favorite: boolean) =>
@@ -82,7 +114,7 @@ export const api = {
   startNeighbors: () => invoke<void>("start_neighbors"),
   stopNeighbors: () => invoke<void>("stop_neighbors"),
   neighborsRunning: () => invoke<boolean>("neighbors_running"),
-  startScan: (range: string) => invoke<void>("start_scan", { range }),
+  startScan: (range: string, thorough: boolean) => invoke<void>("start_scan", { range, thorough }),
   cancelScan: () => invoke<void>("cancel_scan"),
   ouiInfo: () => invoke<[number, string]>("oui_info"),
   openWeb: (ip: string, port: number) => invoke<void>("open_web", { ip, port }),

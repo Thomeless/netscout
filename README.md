@@ -11,7 +11,8 @@ Nástroj pro IT adminy a správce sítí (Windows, Rust + Tauri + React, Fluent 
 
 - **Inventář** – sloučený přehled zařízení ze skenu a neighbour discovery podle MAC adresy; vlastní názvy, poznámky, oblíbené, uložené offline záznamy, export CSV.
 - **IP profily** – uložené konfigurace IPv4 (statická / DHCP) pro síťové karty, použití jedním kliknutím, tlačítko Zpět.
-- **Sken sítě** – ARP sken lokální podsítě, výrobce (IEEE OUI), hostname, základní porty, odhad typu zařízení, export CSV.
+- **Sken sítě** – ARP sken lokální podsítě doplněný o mDNS a UPnP: výrobce (IEEE OUI), jméno, model, nabízené služby, titulek webu, porty, odhad typu zařízení (tiskárny, Google Nest, Apple TV, kamery, telefony se soukromou MAC…), volitelný důkladný režim pro zařízení v úsporném režimu, detail zařízení, export CSV.
+- **DHCP z routeru MikroTik** – volitelně (Zdroje dat): jméno hostitele, Class ID, Client ID a komentář z DHCP leasů přes RouterOS API (port 8728); údaje se přidají ke skenu a do inventáře.
 - **Neighbors** – MikroTik MNDP, Ubiquiti discovery, Hikvision SADP, ONVIF WS-Discovery, Cisco CDP a LLDP (ty vyžadují [Npcap](https://npcap.com)).
 
 ## Vývoj
@@ -35,7 +36,9 @@ Výsledek je v `target/release/bundle/nsis/`.
 ## Struktura
 
 - `src-tauri/src/netcfg.rs` – výpis a změna IP (PowerShell NetTCPIP cmdlety, hodnoty přes proměnné prostředí)
-- `src-tauri/src/scan.rs` – ARP sken (`SendARP`), porty, reverzní DNS
+- `src-tauri/src/scan.rs` – průzkum sítě (UDP „šťouchnutí“ + ARP tabulka), porty, reverzní DNS, odhad typu
+- `src-tauri/src/mdns.rs`, `ssdp.rs` – mDNS/DNS-SD a UPnP, ve kterých se zařízení popíšou samy
+- `src-tauri/src/mikrotik.rs` – RouterOS API (DHCP leasy), přihlašovací údaje šifrované přes Windows DPAPI
 - `src-tauri/src/neighbors.rs`, `proto.rs` – discovery sokety a parsery protokolů
 - `src-tauri/src/l2cap.rs` – zachytávání CDP/LLDP; `wpcap.dll` se načítá za běhu, bez Npcap SDK
 - `src-tauri/src/inventory.rs`, `profiles.rs` – ukládání do datové složky aplikace (JSON)

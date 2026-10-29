@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tomáš Nesrsta
 import { useEffect, useReducer, useRef, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type Host, type Iface, type Meta, type Neighbor, type SeenEntry } from "./api";
+import { api, type Host, type Iface, type Lease, type Meta, type MikrotikSettings, type Neighbor, type SeenEntry } from "./api";
 
 export type SeenHost = Host & { seen: number };
 export type SeenNeighbor = Neighbor & { seen: number };
@@ -15,6 +15,10 @@ export interface State {
   hosts: Record<string, SeenHost>;
   neighbors: Record<string, SeenNeighbor>;
   metas: Record<string, Meta>;
+  /** DHCP leasy z routeru MikroTik podle MAC (jméno hostitele, Class ID…). */
+  leases: Record<string, Lease>;
+  mikrotik: MikrotikSettings | null;
+  leasesError: string | null;
   ifaces: Iface[] | null;
   ifacesError: string | null;
   admin: boolean | null;
@@ -27,6 +31,9 @@ let state: State = {
   hosts: {},
   neighbors: {},
   metas: {},
+  leases: {},
+  mikrotik: null,
+  leasesError: null,
   ifaces: null,
   ifacesError: null,
   admin: null,
@@ -100,7 +107,7 @@ function entries(): SeenEntry[] {
   const get = (mac: string) => m.get(mac) ?? { mac, ip: "", vendor: "", name: "", kind: "" };
   for (const h of Object.values(state.hosts)) {
     const e = get(h.mac);
-    m.set(h.mac, { mac: h.mac, ip: h.ip, vendor: h.vendor ?? e.vendor, name: h.hostname ?? e.name, kind: h.kind ?? e.kind });
+    m.set(h.mac, { mac: h.mac, ip: h.ip, vendor: h.vendor ?? e.vendor, name: state.leases[h.mac]?.host_name || h.name || h.hostname || e.name, kind: h.kind ?? e.kind });
   }
   for (const n of Object.values(state.neighbors)) {
     if (!n.mac) continue;
@@ -142,10 +149,30 @@ export function refreshIfaces(): Promise<void> {
   return ifacesInFlight;
 }
 
-export async function startScan(range: string) {
+let leasesInFlight: Promise<void> | null = null;
+
+/** Načte nastavení routeru a (pokud je uložené heslo) DHCP leasy. */
+export function refreshLeases(): Promise<void> {
+  leasesInFlight ??= (async () => {
+    try {
+      const mikrotik = await api.mikrotikSettings();
+      set({ mikrotik });
+      if (!mikrotik.has_password) return set({ leases: {}, leasesError: null });
+      const list = await api.mikrotikLeases();
+      set({ leases: Object.fromEntries(list.map((l) => [l.mac, l])), leasesError: null });
+    } catch (e) {
+      set({ leasesError: String(e) });
+    }
+  })().finally(() => {
+    leasesInFlight = null;
+  });
+  return leasesInFlight;
+}
+
+export async function startScan(range: string, thorough: boolean) {
   set({ hosts: {}, scan: { running: false, progress: null, error: null } });
   try {
-    await api.startScan(range);
+    await api.startScan(range, thorough);
     set({ scan: { ...state.scan, running: true } });
   } catch (e) {
     set({ scan: { ...state.scan, error: String(e) } });
@@ -196,13 +223,17 @@ export function initStore() {
   listen<{ done: number; total: number }>("scan-progress", (e) =>
     set({ scan: { ...state.scan, progress: e.payload } }),
   );
-  listen<boolean>("scan-done", () => set({ scan: { ...state.scan, running: false } }));
+  listen<boolean>("scan-done", () => {
+    set({ scan: { ...state.scan, running: false } });
+    refreshLeases();
+  });
   listen("neighbors-done", () => set({ nb: { ...state.nb, running: false } }));
   listen<string>("neighbors-warn", (e) => set({ nb: { ...state.nb, warn: e.payload } }));
 
   api.isAdmin().then((admin) => set({ admin }), () => {});
   api.inventoryLoad().then((metas) => set({ metas }), () => {});
   refreshIfaces();
+  refreshLeases();
   // Discovery běží od startu aplikace.
   api.neighborsRunning().then((r) => (r ? set({ nb: { ...state.nb, running: true } }) : startNeighbors()), () => {});
 }
