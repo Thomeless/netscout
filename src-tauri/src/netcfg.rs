@@ -5,6 +5,8 @@
 use crate::ps;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Addr {
@@ -77,17 +79,26 @@ $out = foreach ($a in (Get-NetAdapter | Sort-Object ifIndex)) {
 ConvertTo-Json -InputObject @($out) -Depth 5 -Compress
 "#;
 
+static CACHE: Mutex<Option<(Instant, Vec<Iface>)>> = Mutex::new(None);
+
+/// Seznam rozhraní se krátce sdílí: start aplikace žádá stejná data z více míst najednou
+/// (rozhraní, discovery, sken) a každé volání PowerShellu stojí vteřiny. Zámek zároveň zajistí,
+/// že souběžná volání čekají na jeden společný dotaz.
 pub fn list_interfaces() -> Result<Vec<Iface>, String> {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(2) {
+            return Ok(list.clone());
+        }
+    }
     let json = ps::run(LIST_SCRIPT, &[])?;
-    serde_json::from_str(&json).map_err(|e| format!("Neplatný výstup z PowerShellu: {e}"))
+    let list: Vec<Iface> = serde_json::from_str(&json).map_err(|e| format!("Neplatný výstup z PowerShellu: {e}"))?;
+    *cache = Some((Instant::now(), list.clone()));
+    Ok(list)
 }
 
 pub fn is_admin() -> bool {
-    ps::run(
-        "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-        &[],
-    )
-    .is_ok_and(|s| s.eq_ignore_ascii_case("true"))
+    unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
 }
 
 pub fn validate(cfg: &IpConfig) -> Result<(), String> {
@@ -156,5 +167,7 @@ pub fn apply(iface: &str, cfg: &IpConfig) -> Result<(), String> {
             ("NA_DNS", cfg.dns.iter().map(|d| d.trim()).collect::<Vec<_>>().join(";")),
         ],
     )
-    .map(|_| ())
+    .map(|_| {
+        *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    })
 }

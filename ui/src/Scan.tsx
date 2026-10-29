@@ -111,7 +111,7 @@ export default memo(function Scan() {
                 <td className={c.hideNarrow}>{h.hostname ?? "—"}</td>
                 <td className={c.hideXNarrow}>{h.kind ?? "—"}</td>
                 <td className={mergeClasses(c.mono, c.hideNarrow)}>{h.ports.join(", ") || "—"}</td>
-                <td className={c.hideNarrow}>{h.latency_ms}</td>
+                <td className={c.hideNarrow}>{h.latency_ms || "—"}</td>
                 <td>
                   <div className={c.actions} style={{ flexWrap: "nowrap", gap: 2 }}>
                     {webPort(h) && <IconBtn label="Otevřít web" onClick={() => api.openWeb(h.ip, webPort(h)!).catch((e) => setActionError(String(e)))}><Globe20Regular /></IconBtn>}

@@ -4,15 +4,17 @@
 
 use crate::{netcfg, oui};
 use serde::Serialize;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+#[cfg(test)]
 use windows_sys::Win32::NetworkManagement::IpHelper::SendARP;
 
 const MAX_HOSTS: u32 = 65_536;
-const MAX_THREADS: usize = 128;
+const REPORT_THREADS: usize = 24;
 const PORTS: &[u16] = &[21, 22, 23, 53, 80, 139, 443, 445, 554, 3389, 8000, 8080, 8291, 8728, 9100, 37777];
 
 #[derive(Default)]
@@ -100,6 +102,8 @@ fn find_source(start: u32, end: u32, ifaces: &[netcfg::Iface]) -> Result<Ipv4Add
     Err("Rozsah není v lokální podsíti žádného aktivního rozhraní (zatím je podporován jen ARP sken lokální sítě)".into())
 }
 
+/// Jednotlivý ARP dotaz přes SendARP (jen pro diagnostické testy; při souběhu je nespolehlivý).
+#[cfg(test)]
 fn arp(src: Ipv4Addr, dst: Ipv4Addr) -> Option<([u8; 6], u32)> {
     let mut mac = [0u32; 2];
     let mut len: u32 = 6;
@@ -119,22 +123,34 @@ fn arp(src: Ipv4Addr, dst: Ipv4Addr) -> Option<([u8; 6], u32)> {
     Some(([a[0], a[1], a[2], a[3], b[0], b[1]], t.elapsed().as_millis() as u32))
 }
 
-fn open_ports(ip: Ipv4Addr) -> Vec<u16> {
+/// Otevřené porty ze seznamu a nejkratší doba navázání spojení (orientační latence).
+fn open_ports(ip: Ipv4Addr) -> (Vec<u16>, Option<u32>) {
     let found = Mutex::new(vec![]);
     std::thread::scope(|s| {
         for &p in PORTS {
             let found = &found;
             s.spawn(move || {
                 let addr = SocketAddr::new(IpAddr::V4(ip), p);
+                let t = Instant::now();
                 if TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok() {
-                    found.lock().unwrap().push(p);
+                    found.lock().unwrap().push((p, t.elapsed().as_millis() as u32));
                 }
             });
         }
     });
     let mut v = found.into_inner().unwrap();
     v.sort_unstable();
-    v
+    let best = v.iter().map(|(_, ms)| *ms).min();
+    (v.into_iter().map(|(p, _)| p).collect(), best)
+}
+
+/// Reverzní DNS s časovým limitem (systémové volání se jinak může zdržet na několik vteřin).
+fn reverse_dns(ip: Ipv4Addr) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(dns_lookup::lookup_addr(&IpAddr::V4(ip)).ok());
+    });
+    rx.recv_timeout(Duration::from_millis(1500)).ok().flatten().filter(|h| h.parse::<IpAddr>().is_err())
 }
 
 /// Hrubý odhad typu zařízení z otevřených portů a výrobce.
@@ -169,16 +185,98 @@ fn fmt_mac(m: &[u8; 6]) -> String {
     m.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
 }
 
+unsafe extern "system" {
+    fn GetIpNetTable(table: *mut u8, size: *mut u32, order: i32) -> u32;
+}
+
+/// ARP tabulka systému (`GetIpNetTable`): jen vyřešené záznamy (dynamické a statické) s unicast MAC.
+fn arp_table() -> Vec<(u32, [u8; 6])> {
+    const ROW: usize = 24; // MIB_IPNETROW: index, délka MAC, MAC[8], adresa, typ
+    let mut size: u32 = 0;
+    unsafe { GetIpNetTable(std::ptr::null_mut(), &mut size, 0) };
+    if size == 0 {
+        return vec![];
+    }
+    let mut buf = vec![0u8; size as usize + 4096];
+    let mut size = buf.len() as u32;
+    if unsafe { GetIpNetTable(buf.as_mut_ptr(), &mut size, 0) } != 0 {
+        return vec![];
+    }
+    let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let mut out = vec![];
+    for k in 0..count {
+        let Some(row) = buf.get(4 + k * ROW..4 + (k + 1) * ROW) else { break };
+        let len = u32::from_ne_bytes([row[4], row[5], row[6], row[7]]);
+        let ty = u32::from_ne_bytes([row[20], row[21], row[22], row[23]]);
+        let mac: [u8; 6] = row[8..14].try_into().unwrap();
+        if len == 6 && (ty == 3 || ty == 4) && mac[0] & 1 == 0 && mac != [0; 6] {
+            out.push((u32::from_be_bytes([row[16], row[17], row[18], row[19]]), mac));
+        }
+    }
+    out
+}
+
+/// "AA-BB-CC-DD-EE-FF" nebo "AA:BB:…" → bajty (jen unicast).
+fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 {
+        return None;
+    }
+    let mut m = [0u8; 6];
+    for (i, b) in m.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    (m[0] & 1 == 0).then_some(m)
+}
+
+/// Najde živá zařízení v lokální podsíti. `SendARP` se při souběžném použití ukázal jako nespolehlivý
+/// (ARP dotazy se ztrácely a výsledky se mezi běhy lišily), proto systém donutíme poslat ARP dotazy sám:
+/// prázdný UDP datagram na každou adresu spustí překlad adresy v síťovém zásobníku (s jeho vlastním
+/// opakováním) a pak přečteme ARP tabulku. Nevyřešené adresy se „šťouchnou“ ještě jednou.
+fn discover(src: Ipv4Addr, s: u32, e: u32, cancelled: &dyn Fn() -> bool, poked: &dyn Fn()) -> Vec<(u32, [u8; 6])> {
+    let sock = UdpSocket::bind((src, 0)).ok();
+    let poke = |skip: &HashSet<u32>| {
+        let Some(sock) = &sock else { return };
+        for ip in s..=e {
+            if cancelled() {
+                break;
+            }
+            if !skip.contains(&ip) {
+                let _ = sock.send_to(&[0u8], (Ipv4Addr::from(ip), 9));
+            }
+        }
+    };
+    let wait = |ms: u64| {
+        let end = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < end && !cancelled() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let in_range = || arp_table().into_iter().filter(|(ip, _)| (s..=e).contains(ip)).collect::<Vec<_>>();
+
+    poke(&HashSet::new());
+    poked();
+    for pause in [2500, 2500, 2000] {
+        wait(pause);
+        let resolved: HashSet<u32> = in_range().iter().map(|(ip, _)| *ip).collect();
+        if pause != 2000 {
+            poke(&resolved);
+        }
+    }
+    in_range()
+}
+
 pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String) -> Result<(), String> {
     if ctl.running.swap(true, Ordering::SeqCst) {
         return Err("Sken již běží".into());
     }
     let setup = (|| {
         let (s, e) = parse_range(&range)?;
-        let src = find_source(s, e, &netcfg::list_interfaces()?)?;
-        Ok::<_, String>((s, e, src))
+        let ifaces = netcfg::list_interfaces()?;
+        let src = find_source(s, e, &ifaces)?;
+        Ok::<_, String>((s, e, src, ifaces))
     })();
-    let (s, e, src) = match setup {
+    let (s, e, src, ifaces) = match setup {
         Ok(v) => v,
         Err(err) => {
             ctl.running.store(false, Ordering::SeqCst);
@@ -189,39 +287,74 @@ pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String) -> Result<(),
 
     std::thread::spawn(move || {
         let db = oui::load(&app);
-        let total = (e - s + 1) as usize;
-        let next = AtomicUsize::new(0);
+        let n = (e - s + 1) as usize;
+        let cancelled = || ctl.cancel.load(Ordering::SeqCst);
         let done = AtomicUsize::new(0);
+        let total = AtomicUsize::new(n);
+        let progress = || {
+            let t = total.load(Ordering::SeqCst);
+            let _ = app.emit("scan-progress", Progress { done: done.load(Ordering::SeqCst).min(t), total: t });
+        };
+
+        // Adresa je projitá hned po rozeslání dotazů; zbytek času běží čekání na odpovědi.
+        let mut list = discover(src, s, e, &cancelled, &|| {
+            done.store(n, Ordering::SeqCst);
+            progress();
+        });
+        // Vlastní adresy počítače systém v ARP tabulce nemá.
+        for i in ifaces.iter().filter(|i| i.status == "Up") {
+            for a in &i.addresses {
+                let Ok(ip) = a.ip.parse::<Ipv4Addr>() else { continue };
+                let v = u32::from(ip);
+                if (s..=e).contains(&v) && !list.iter().any(|(x, _)| *x == v) {
+                    if let Some(mac) = parse_mac(&i.mac) {
+                        list.push((v, mac));
+                    }
+                }
+            }
+        }
+        total.fetch_add(list.len(), Ordering::SeqCst);
+
+        // Doplnění údajů (latence, výrobce, porty, hostname) paralelně po zařízeních.
+        let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
-            for _ in 0..total.min(MAX_THREADS) {
+            for _ in 0..REPORT_THREADS.min(list.len()) {
                 scope.spawn(|| loop {
-                    let i = next.fetch_add(1, Ordering::SeqCst);
-                    if i >= total || ctl.cancel.load(Ordering::SeqCst) {
+                    let k = next.fetch_add(1, Ordering::SeqCst);
+                    if k >= list.len() || cancelled() {
                         break;
                     }
-                    let ip = Ipv4Addr::from(s + i as u32);
-                    if let Some((mac, latency_ms)) = arp(src, ip) {
-                        let vendor = oui::lookup(&db, &mac);
-                        let ports = open_ports(ip);
-                        let hostname = dns_lookup::lookup_addr(&IpAddr::V4(ip))
-                            .ok()
-                            .filter(|h| h.parse::<IpAddr>().is_err());
-                        let kind = guess_kind(vendor.as_deref(), &ports);
-                        let _ = app.emit(
-                            "scan-host",
-                            Host { ip: ip.to_string(), mac: fmt_mac(&mac), vendor, hostname, kind, ports, latency_ms },
-                        );
-                    }
-                    let d = done.fetch_add(1, Ordering::SeqCst) + 1;
-                    if d % 4 == 0 || d == total {
-                        let _ = app.emit("scan-progress", Progress { done: d, total });
-                    }
+                    let (v, mac) = list[k];
+                    let ip = Ipv4Addr::from(v);
+                    let vendor = oui::lookup(&db, &mac);
+                    // Nejdřív zařízení hned ukážeme se základními údaji, doplnění portů a jména přijde chvíli po něm.
+                    let mut host = Host {
+                        ip: ip.to_string(),
+                        mac: fmt_mac(&mac),
+                        kind: guess_kind(vendor.as_deref(), &[]),
+                        vendor,
+                        hostname: None,
+                        ports: vec![],
+                        latency_ms: 0,
+                    };
+                    let _ = app.emit("scan-host", host.clone());
+                    let (ports, latency) = open_ports(ip);
+                    host.latency_ms = latency.unwrap_or(0);
+                    host.kind = guess_kind(host.vendor.as_deref(), &ports);
+                    host.ports = ports;
+                    host.hostname = reverse_dns(ip);
+                    let _ = app.emit("scan-host", host);
+                    done.fetch_add(1, Ordering::SeqCst);
+                    progress();
                 });
             }
         });
-        let cancelled = ctl.cancel.load(Ordering::SeqCst);
+        let t = total.load(Ordering::SeqCst);
+        done.store(t, Ordering::SeqCst);
+        progress();
+        let was_cancelled = cancelled();
         ctl.running.store(false, Ordering::SeqCst);
-        let _ = app.emit("scan-done", cancelled);
+        let _ = app.emit("scan-done", was_cancelled);
     });
     Ok(())
 }
@@ -243,6 +376,49 @@ mod tests {
         assert!(r("10.0.0.0/8").is_err());
         assert!(r("10.0.0.9-3").is_err());
         assert!(r("abc").is_err());
+    }
+
+    #[test]
+    fn mac_parsing() {
+        assert_eq!(parse_mac("2C-C8-1B-41-6E-9A"), Some([0x2c, 0xc8, 0x1b, 0x41, 0x6e, 0x9a]));
+        assert!(parse_mac("2c:c8:1b:41:6e:9a").is_some());
+        assert_eq!(parse_mac("FF-FF-FF-FF-FF-FF"), None);
+        assert_eq!(parse_mac("01-00-5E-00-00-FB"), None);
+        assert_eq!(parse_mac("zz"), None);
+    }
+
+    /// Živý test: ARP tabulka systému se dá přečíst a obsahuje jen unicast MAC.
+    #[test]
+    #[ignore]
+    fn live_arp_table() {
+        let t = arp_table();
+        println!("položek: {}", t.len());
+        for (ip, mac) in t.iter().take(6) {
+            println!("  {} {}", Ipv4Addr::from(*ip), fmt_mac(mac));
+        }
+        assert!(t.iter().all(|(_, m)| m[0] & 1 == 0));
+    }
+
+    /// Živý test: opakované běhy discover() na /24 musí dávat stabilní výsledek.
+    #[test]
+    #[ignore]
+    fn live_discover_stable() {
+        let ifaces = netcfg::list_interfaces().unwrap();
+        let (src, prefix) = ifaces
+            .iter()
+            .filter(|i| i.status == "Up")
+            .flat_map(|i| i.addresses.iter())
+            .find_map(|a| a.ip.parse::<Ipv4Addr>().ok().filter(|ip| !ip.is_link_local() && a.prefix == 24).map(|ip| (ip, a.prefix)))
+            .expect("žádné rozhraní s /24");
+        let _ = prefix;
+        let base = u32::from(src) & !0xff;
+        for run in 1..=3 {
+            let t = Instant::now();
+            let found = discover(src, base + 1, base + 254, &|| false, &|| {});
+            let mut ips: Vec<String> = found.iter().map(|(ip, _)| Ipv4Addr::from(*ip).to_string().rsplit('.').next().unwrap().to_string()).collect();
+            ips.sort_by_key(|x| x.parse::<u32>().unwrap());
+            println!("běh {run}: {} zařízení za {} ms: {}", found.len(), t.elapsed().as_millis(), ips.join(","));
+        }
     }
 
     /// Živý test: ARP na výchozí bránu aktivního rozhraní (jen pro lokální ruční spuštění).
