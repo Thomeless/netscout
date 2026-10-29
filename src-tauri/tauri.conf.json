@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NetScout",
+  "version": "0.1.0",
+  "identifier": "app.netscout",
+  "build": {
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "devUrl": "http://localhost:5174",
+    "beforeBuildCommand": "npm --prefix ui run build",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NetScout",
+        "width": 1100,
+        "height": 740,
+        "minWidth": 860,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "shortDescription": "Nástroje pro IT adminy a správce sítí",
+    "createUpdaterArtifacts": true,
+    "publisher": "Tomáš Nesrsta",
+    "copyright": "Copyright (C) 2026 Tomáš Nesrsta. AGPL-3.0-only.",
+    "license": "AGPL-3.0-only",
+    "licenseFile": "../LICENSE"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGRjE2OEU0OUE2NzFEM0QKUldROUhXZWE1R2p4ci9PRFdsZURtVC9jRUZwUWdDUVhGdGVuRzFjVE1WSTdzQVN4cEIraDJ0NzcK",
+      "endpoints": [
+        "https://github.com/Thomeless/netscout/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

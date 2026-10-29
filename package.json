@@ -1,0 +1,19 @@
+{
+  "name": "netscout",
+  "private": true,
+  "author": "Tomáš Nesrsta",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Thomeless/netscout.git"
+  },
+  "description": "NetScout: IP profily, sken sítě a neighbour discovery pro správce sítí",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3"
+  }
+}

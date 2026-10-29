@@ -1,0 +1,19 @@
+NetScout
+Copyright (C) 2026 Tomáš Nesrsta
+
+Autor a původní tvůrce: Tomáš Nesrsta (GitHub: Thomeless).
+Original author and creator: Tomáš Nesrsta (GitHub: Thomeless).
+
+Tento program je svobodný software: můžete jej šířit a upravovat podle podmínek
+GNU Affero General Public License verze 3 (viz soubor LICENSE).
+Distribuce upravených verzí musí zachovat tuto poznámku o autorství a copyrightu
+a označit provedené změny (AGPL-3.0, §5 a §7).
+
+NetScout je nezávislý projekt. Názvy výrobců a protokolů (MikroTik, Ubiquiti, Hikvision,
+Cisco, ONVIF a další) patří jejich vlastníkům a jsou použity jen k popisu kompatibility;
+projekt s nimi není nijak spojen. Formáty discovery protokolů vycházejí z veřejně dostupných popisů.
+
+Databáze výrobců podle MAC adresy (src-tauri/resources/oui.csv) pochází z IEEE Registration Authority
+(https://standards-oui.ieee.org/oui/oui.csv).
+
+Součásti třetích stran a jejich licence: THIRD_PARTY_LICENSES.md

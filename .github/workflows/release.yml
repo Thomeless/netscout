@@ -1,0 +1,36 @@
+name: Release
+
+# Vydání: pushni tag ve tvaru v0.1.1 (verze musí odpovídat version v src-tauri/tauri.conf.json a Cargo.toml).
+# Vyžaduje v repozitáři secret TAURI_SIGNING_PRIVATE_KEY (obsah souboru netscout.key).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: npm ci
+      - run: npm --prefix ui ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "NetScout ${{ github.ref_name }}"
+          releaseBody: "Instalátor pro Windows. Existující instalace se aktualizují automaticky."
+          releaseDraft: false
+          prerelease: false
