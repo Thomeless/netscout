@@ -1,6 +1,6 @@
 [package]
 name = "netscout-app"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Tomáš Nesrsta"]
 license = "AGPL-3.0-only"

@@ -6,7 +6,7 @@ use crate::netcfg::IpConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Profile {
@@ -28,8 +28,7 @@ struct Snapshot {
 }
 
 fn dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let d = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    let d = crate::portable::data_dir(app)?;
     Ok(d)
 }
 

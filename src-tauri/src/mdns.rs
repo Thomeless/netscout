@@ -236,6 +236,30 @@ fn socket(src: Ipv4Addr) -> std::io::Result<UdpSocket> {
     Ok(s.into())
 }
 
+/// Jen poslouchá oznámení na multicastové skupině mDNS (UDP 5353), nic neodesílá.
+/// Zachytí odpovědi, které zařízení posílají jiným počítačům, takže je slyšet jen to, co se v síti děje samo.
+pub fn listen(src: Ipv4Addr, duration: Duration, cancelled: &(dyn Fn() -> bool + Sync)) -> HashMap<Ipv4Addr, MdnsInfo> {
+    let mut found: HashMap<Ipv4Addr, MdnsInfo> = HashMap::new();
+    let sock = (|| -> std::io::Result<UdpSocket> {
+        let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        s.set_reuse_address(true)?;
+        s.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 5353).into())?;
+        s.join_multicast_v4(&GROUP, &src)?;
+        s.set_read_timeout(Some(Duration::from_millis(250)))?;
+        Ok(s.into())
+    })();
+    let Ok(sock) = sock else { return found };
+    let start = Instant::now();
+    let mut buf = vec![0u8; 9000];
+    while start.elapsed() < duration && !cancelled() {
+        let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+        let std::net::SocketAddr::V4(from) = from else { continue };
+        absorb(found.entry(*from.ip()).or_default(), &buf[..n]);
+    }
+    found.retain(|_, i| *i != MdnsInfo::default());
+    found
+}
+
 /// Zeptá se na služby na síti rozhraní `src` a po dobu `duration` sbírá odpovědi.
 /// Po první vlně se zeptá i na typy služeb, které zařízení samy vyjmenovala.
 pub fn probe(src: Ipv4Addr, duration: Duration, cancelled: &(dyn Fn() -> bool + Sync)) -> HashMap<Ipv4Addr, MdnsInfo> {

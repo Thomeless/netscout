@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Tomáš Nesrsta
-//! Neighbour discovery: aktivní dotazy (probe) na každém aktivním rozhraní + pasivní poslech MNDP.
+//! Neighbour discovery: pasivní poslech (MNDP, CDP, LLDP) a volitelně krátká dávka aktivních dotazů (probe).
 //! Protokoly: MikroTik MNDP, Ubiquiti discovery, Hikvision SADP, ONVIF WS-Discovery.
 
 use crate::proto::{self, Neighbor};
@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const PROBE_EVERY: Duration = Duration::from_secs(3);
+/// Aktivní hledání pošle jen tolik dávek dotazů; pak už jen poslouchá (žádný trvalý provoz na pozadí).
+const PROBE_ROUNDS: u32 = 3;
 
 #[derive(Default)]
 pub struct NeighborControl {
@@ -129,16 +131,37 @@ fn passive_mndp() -> std::io::Result<UdpSocket> {
     Ok(s.into())
 }
 
-fn worker(app: &AppHandle, ctl: &NeighborControl, sock: UdpSocket, kind: Kind, locals: &[Local], bound: Option<&Local>) {
+/// Výrobce podle MAC adresy zapsané textem (`AA:BB:…`, `AA-BB-…`).
+fn vendor_of(db: &oui::Db, mac: &str) -> String {
+    let hex: String = mac.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 {
+        return String::new();
+    }
+    let mut m = [0u8; 6];
+    for (i, b) in m.iter_mut().enumerate() {
+        match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+            Ok(v) => *b = v,
+            Err(_) => return String::new(),
+        }
+    }
+    oui::lookup(db, &m).unwrap_or_default()
+}
+
+fn worker(app: &AppHandle, ctl: &NeighborControl, db: &oui::Db, sock: UdpSocket, kind: Kind, locals: &[Local], bound: Option<&Local>) {
     let mut buf = vec![0u8; 8192];
     let mut last_probe: Option<Instant> = None;
+    let mut rounds = 0;
     while !ctl.stop.load(Ordering::SeqCst) {
-        if bound.is_some() && last_probe.is_none_or(|t| t.elapsed() >= PROBE_EVERY) {
+        if bound.is_some() && rounds < PROBE_ROUNDS && last_probe.is_none_or(|t| t.elapsed() >= PROBE_EVERY) {
             let _ = sock.send_to(&kind.probe(), kind.dest());
             last_probe = Some(Instant::now());
+            rounds += 1;
         }
         let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
         let Some(mut nb) = kind.parse(&buf[..n], from) else { continue };
+        if nb.vendor.is_empty() {
+            nb.vendor = vendor_of(db, &nb.mac);
+        }
         nb.local_iface = match bound {
             Some(l) => l.name.clone(),
             None => match from.ip() {
@@ -191,7 +214,8 @@ fn capture_worker(app: &AppHandle, ctl: &NeighborControl, mut cap: l2cap::Captur
     }
 }
 
-pub fn start(app: AppHandle, ctl: Arc<NeighborControl>) -> Result<(), String> {
+/// `active`: navíc ke stálému poslechu odešle pár dávek dotazů (MNDP, Ubiquiti, SADP, ONVIF).
+pub fn start(app: AppHandle, ctl: Arc<NeighborControl>, active: bool) -> Result<(), String> {
     if ctl.running.swap(true, Ordering::SeqCst) {
         return Err("Discovery již běží".into());
     }
@@ -222,10 +246,12 @@ pub fn start(app: AppHandle, ctl: Arc<NeighborControl>) -> Result<(), String> {
 
     std::thread::spawn(move || {
         let mut socks: Vec<(UdpSocket, Kind, Option<usize>)> = vec![];
-        for (idx, l) in locals.iter().enumerate() {
-            for k in KINDS {
-                if let Ok(s) = probe_socket(l.ip, k) {
-                    socks.push((s, k, Some(idx)));
+        if active {
+            for (idx, l) in locals.iter().enumerate() {
+                for k in KINDS {
+                    if let Ok(s) = probe_socket(l.ip, k) {
+                        socks.push((s, k, Some(idx)));
+                    }
                 }
             }
         }
@@ -244,7 +270,8 @@ pub fn start(app: AppHandle, ctl: Arc<NeighborControl>) -> Result<(), String> {
             }
             for (sock, kind, idx) in socks {
                 let (app, ctl, locals) = (&app, &*ctl, &locals);
-                scope.spawn(move || worker(app, ctl, sock, kind, locals, idx.map(|i| &locals[i])));
+                let db = &db;
+                scope.spawn(move || worker(app, ctl, db, sock, kind, locals, idx.map(|i| &locals[i])));
             }
         });
         ctl.running.store(false, Ordering::SeqCst);

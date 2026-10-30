@@ -100,6 +100,8 @@ export interface MikrotikSettings {
   has_password: boolean;
 }
 
+export type ScanMode = "quiet" | "careful" | "normal" | "thorough";
+
 export const api = {
   mikrotikSettings: () => invoke<MikrotikSettings>("mikrotik_settings"),
   mikrotikSave: (host: string, user: string, password: string | null) => invoke<void>("mikrotik_save", { host, user, password }),
@@ -111,14 +113,16 @@ export const api = {
   inventoryUpdate: (mac: string, label: string, note: string, favorite: boolean) =>
     invoke<Record<string, Meta>>("inventory_update", { mac, label, note, favorite }),
   inventoryForget: (mac: string) => invoke<Record<string, Meta>>("inventory_forget", { mac }),
-  startNeighbors: () => invoke<void>("start_neighbors"),
+  startNeighbors: (active: boolean) => invoke<void>("start_neighbors", { active }),
   stopNeighbors: () => invoke<void>("stop_neighbors"),
   neighborsRunning: () => invoke<boolean>("neighbors_running"),
-  startScan: (range: string, thorough: boolean) => invoke<void>("start_scan", { range, thorough }),
+  startScan: (range: string, mode: ScanMode, ports: boolean) => invoke<void>("start_scan", { range, mode, ports }),
   cancelScan: () => invoke<void>("cancel_scan"),
   ouiInfo: () => invoke<[number, string]>("oui_info"),
   openWeb: (ip: string, port: number) => invoke<void>("open_web", { ip, port }),
   openRdp: (ip: string) => invoke<void>("open_rdp", { ip }),
+  isPortable: () => invoke<boolean>("is_portable"),
+  openReleases: () => invoke<void>("open_releases"),
   isAdmin: () => invoke<boolean>("is_admin"),
   listInterfaces: () => invoke<Iface[]>("list_interfaces"),
   listProfiles: () => invoke<Profile[]>("list_profiles"),

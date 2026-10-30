@@ -31,6 +31,19 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "NetScout ${{ github.ref_name }}"
-          releaseBody: "Instalátor pro Windows. Existující instalace se aktualizují automaticky."
+          releaseBody: "Instalátor pro Windows (existující instalace se aktualizují automaticky) a přenosná verze NetScout_*_portable.zip bez instalace."
           releaseDraft: false
           prerelease: false
+      # Přenosná verze: samostatný exe + soubor `portable`; data se pak ukládají do složky `data` vedle něj.
+      - name: Portable zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $d = "NetScout_${{ github.ref_name }}_portable"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item target/release/netscout-app.exe "$d/NetScout.exe"
+          New-Item -ItemType File "$d/portable" | Out-Null
+          Copy-Item LICENSE, NOTICE, README.md $d
+          Compress-Archive -Path $d -DestinationPath "$d.zip"
+          gh release upload "${{ github.ref_name }}" "$d.zip" --clobber

@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
@@ -214,8 +214,7 @@ pub struct Settings {
 }
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {
-    let d = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    let d = crate::portable::data_dir(app)?;
     Ok(d.join("mikrotik.json"))
 }
 

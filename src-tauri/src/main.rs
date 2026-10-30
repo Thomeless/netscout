@@ -12,6 +12,7 @@ mod netcfg;
 mod oui;
 mod proto;
 mod profiles;
+mod portable;
 mod ps;
 mod scan;
 mod ssdp;
@@ -132,13 +133,13 @@ async fn mikrotik_leases(app: AppHandle) -> Result<Vec<mikrotik::Lease>, String>
 }
 
 #[tauri::command]
-async fn start_scan(app: AppHandle, ctl: State<'_, Arc<ScanControl>>, range: String, thorough: bool) -> Result<(), String> {
-    scan::start(app, ctl.inner().clone(), range, thorough)
+async fn start_scan(app: AppHandle, ctl: State<'_, Arc<ScanControl>>, range: String, mode: String, ports: bool) -> Result<(), String> {
+    scan::start(app, ctl.inner().clone(), range, scan::Mode::parse(&mode)?, ports)
 }
 
 #[tauri::command]
-async fn start_neighbors(app: AppHandle, ctl: State<'_, Arc<NeighborControl>>) -> Result<(), String> {
-    neighbors::start(app, ctl.inner().clone())
+async fn start_neighbors(app: AppHandle, ctl: State<'_, Arc<NeighborControl>>, active: bool) -> Result<(), String> {
+    neighbors::start(app, ctl.inner().clone(), active)
 }
 
 #[tauri::command]
@@ -181,7 +182,19 @@ async fn open_rdp(ip: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Přenosná verze nesmí spouštět instalátor: aktualizaci si uživatel stáhne ručně.
+#[tauri::command]
+fn is_portable() -> bool {
+    portable::is_portable()
+}
+
+#[tauri::command]
+async fn open_releases() -> Result<(), String> {
+    opener::open("https://github.com/Thomeless/netscout/releases/latest").map_err(|e| e.to_string())
+}
+
 fn main() {
+    portable::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -210,6 +223,8 @@ fn main() {
             oui_info,
             open_web,
             open_rdp,
+            is_portable,
+            open_releases,
             is_admin,
             list_interfaces,
             list_profiles,

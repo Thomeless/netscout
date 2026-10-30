@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button, Caption1, Tooltip } from "@fluentui/react-components";
 import { ArrowSync20Regular, ArrowDownload20Regular } from "@fluentui/react-icons";
+import { api } from "./api";
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -20,6 +21,7 @@ export default function Updater({ compact }: { compact: boolean }) {
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [manual, setManual] = useState(false);
+  const [portable, setPortable] = useState(false);
 
   async function run(isManual: boolean) {
     setManual(isManual);
@@ -35,6 +37,7 @@ export default function Updater({ compact }: { compact: boolean }) {
 
   useEffect(() => {
     getVersion().then(setVersion, () => {});
+    api.isPortable().then(setPortable, () => {});
     run(false);
   }, []);
 
@@ -56,7 +59,7 @@ export default function Updater({ compact }: { compact: boolean }) {
 
   const s = status;
   const text =
-    s.kind === "available" ? `Nová verze ${s.update.version}`
+    s.kind === "available" ? (portable ? `Nová verze ${s.update.version}: stáhnout` : `Nová verze ${s.update.version}`)
     : s.kind === "downloading" ? `Stahuji… ${s.total ? Math.round((s.done / s.total) * 100) + " %" : ""}`
     : s.kind === "checking" ? "Kontroluji…"
     : s.kind === "uptodate" && manual ? "Máš nejnovější verzi"
@@ -67,7 +70,7 @@ export default function Updater({ compact }: { compact: boolean }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: compact ? "center" : "stretch" }}>
       {s.kind === "available" ? (
         <Tooltip content={text} relationship="label">
-          <Button appearance="primary" icon={<ArrowDownload20Regular />} onClick={() => install(s.update)}>{compact ? "" : text}</Button>
+          <Button appearance="primary" icon={<ArrowDownload20Regular />} onClick={() => (portable ? api.openReleases().catch(() => {}) : install(s.update))}>{compact ? "" : text}</Button>
         </Tooltip>
       ) : (
         <Tooltip content={s.kind === "error" ? s.message : "Zkontrolovat aktualizace"} relationship="label">

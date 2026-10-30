@@ -5,7 +5,7 @@ body { overflow: hidden; font-family: "Segoe UI Variable Text", "Segoe UI", syst
 * { box-sizing: border-box; }
 /* Tabulky: lehké nativní prvky ve stylu Fluent (stovky řádků se vykreslují rychle). */
 .ns-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: var(--fontSizeBase300); }
-.ns-table th { text-align: left; font-weight: 600; color: var(--colorNeutralForeground2); padding: 8px 12px; border-bottom: 1px solid var(--colorNeutralStroke2); white-space: nowrap; }
+.ns-table th { position: sticky; top: 0; z-index: 1; background: var(--colorNeutralBackground1); text-align: left; font-weight: 600; color: var(--colorNeutralForeground2); padding: 8px 12px; border-bottom: 1px solid var(--colorNeutralStroke2); white-space: nowrap; }
 .ns-table td { padding: 6px 12px; border-bottom: 1px solid var(--colorNeutralStroke3); white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
 .ns-table tbody tr:hover { background: var(--colorSubtleBackgroundHover); }
 .ns-table tbody tr.sel { background: var(--colorBrandBackground2); }

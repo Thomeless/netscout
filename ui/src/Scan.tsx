@@ -9,12 +9,13 @@ import {
   ArrowDownload20Regular, Copy20Regular, DatabaseSearch20Regular, Desktop20Regular, Dismiss24Regular, Globe20Regular,
   Play20Regular, Stop20Regular,
 } from "@fluentui/react-icons";
-import { api, type Host, type Iface } from "./api";
+import { api, type Host, type Iface, type ScanMode } from "./api";
 import { Card, IconBtn, Page, copyText, useCommon } from "./common";
 import DeviceDetail from "./DeviceDetail";
 import { buildDevices, first } from "./devices";
 import SourcesDialog from "./SourcesDialog";
 import { cancelScan, startScan, useStore } from "./store";
+import { ColumnMenu, InfoItem, InfoTip, SearchBox, matches, useColumns, usePersisted, type Col } from "./tableTools";
 import { cmpIp, downloadCsv, ipNum } from "./util";
 
 interface Subnet {
@@ -37,6 +38,23 @@ function subnetsOf(ifaces: Iface[]): Subnet[] {
   return out;
 }
 
+const COLS: Col[] = [
+  { id: "mac", label: "MAC" },
+  { id: "vendor", label: "Výrobce" },
+  { id: "name", label: "Jméno" },
+  { id: "model", label: "Model" },
+  { id: "kind", label: "Typ" },
+  { id: "ports", label: "Porty" },
+  { id: "ms", label: "Odezva" },
+];
+
+const MODES: { id: ScanMode; label: string }[] = [
+  { id: "quiet", label: "Tichý" },
+  { id: "careful", label: "Opatrný" },
+  { id: "normal", label: "Běžný" },
+  { id: "thorough", label: "Důkladný" },
+];
+
 const webPort = (h: Host) => [443, 80, 8080].find((p) => h.ports.includes(p));
 
 export default memo(function Scan() {
@@ -44,12 +62,25 @@ export default memo(function Scan() {
   const { hosts: hostMap, neighbors, metas, leases, mikrotik, ifaces, admin, scan } = useStore("scan");
   const subnets = useMemo(() => subnetsOf(ifaces ?? []), [ifaces]);
   const [range, setRange] = useState("");
-  const [thorough, setThorough] = useState(false);
+  const [mode, setMode] = usePersisted<ScanMode>("scan.mode", "careful");
+  const [ports, setPorts] = usePersisted("scan.ports", false);
+  const [query, setQuery] = useState("");
+  const [col, shownCols, setCols] = useColumns("scan", COLS);
+  const canPorts = mode === "normal" || mode === "thorough";
+  const pickMode = (m: ScanMode) => {
+    setMode(m);
+    setPorts(m === "normal" || m === "thorough");
+  };
+  const go = () => startScan(effective, mode, canPorts && ports);
   const [actionError, setActionError] = useState<string | null>(null);
   const [sources, setSources] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const effective = range || subnets[0]?.cidr || "";
-  const hosts = useMemo(() => Object.values(hostMap).sort((a, b) => cmpIp(a.ip, b.ip)), [hostMap]);
+  const allHosts = useMemo(() => Object.values(hostMap).sort((a, b) => cmpIp(a.ip, b.ip)), [hostMap]);
+  const hosts = useMemo(
+    () => allHosts.filter((h) => matches(query, h.ip, h.mac, h.vendor, h.name, h.hostname, h.model, h.kind, h.services, leases[h.mac]?.host_name, h.private_mac ? "soukromá" : "")),
+    [allHosts, query, leases],
+  );
   const devices = useMemo(() => buildDevices(Object.values(hostMap), Object.values(neighbors), metas, leases), [hostMap, neighbors, metas, leases]);
   const sel = selected ? devices.find((d) => d.id === selected) ?? null : null;
   const pct = scan.progress ? scan.progress.done / scan.progress.total : 0;
@@ -72,12 +103,13 @@ export default memo(function Scan() {
 
   return (
     <Page
+      fill
       title="Sken sítě"
       subtitle="ARP + mDNS + UPnP: MAC, výrobce, jméno, model, služby, porty; jména a Class ID z DHCP routeru"
       actions={
         <>
-          <Button icon={<DatabaseSearch20Regular />} onClick={() => setSources(true)}>
-            Zdroje dat{mikrotik?.has_password ? " ✓" : ""}
+          <Button appearance="subtle" icon={<DatabaseSearch20Regular />} onClick={() => setSources(true)}>
+            Router (volitelné){mikrotik?.has_password ? " ✓" : ""}
           </Button>
           <Button icon={<ArrowDownload20Regular />} onClick={exportCsv} disabled={hosts.length === 0}>Export CSV</Button>
         </>
@@ -95,18 +127,30 @@ export default memo(function Scan() {
             placeholder="192.168.1.0/24 nebo 192.168.1.10-50"
             disabled={scan.running}
             onChange={(_, d) => setRange(d.value)}
-            onKeyDown={(e) => e.key === "Enter" && !scan.running && effective.trim() && startScan(effective, thorough)}
+            onKeyDown={(e) => e.key === "Enter" && !scan.running && effective.trim() && go()}
           />
+          <Select value={mode} onChange={(_, d) => pickMode(d.value as ScanMode)} disabled={scan.running} aria-label="Režim skenu">
+            {MODES.map((m) => <option key={m.id} value={m.id}>Režim: {m.label}</option>)}
+          </Select>
+          <InfoTip label="Co který režim dělá">
+            <InfoItem title="Tichý (cca 12 s)">Nic neodesílá. Přečte ARP tabulku Windows (zařízení, se kterými počítač už komunikoval) a poslouchá mDNS oznámení. Najde nejméně zařízení, ale v síti ho nikdo nepozná.</InfoItem>
+            <InfoItem title="Opatrný (cca 1 minuta, výchozí)">Posílá jen ARP dotazy, což je běžný provoz každé sítě: nejvýš 12 najednou, v náhodném pořadí. K tomu poslouchá mDNS. Žádné UDP pakety, žádné porty ani multicastové dotazy.</InfoItem>
+            <InfoItem title="Běžný (cca 7 s)">Pošle UDP paket na každou adresu, aby systém provedl ARP, a aktivně se ptá přes mDNS a UPnP. Rychlý a spolehlivý, ale na síti s ochranou proti skenování je vidět.</InfoItem>
+            <InfoItem title="Důkladný (cca 20 s)">Jako Běžný, ale čeká déle a opakuje dotazy, aby se ozvala i zařízení v úsporném režimu. Vytvoří nejvíc provozu.</InfoItem>
+          </InfoTip>
           <Switch
-            label="Důkladný (cca 20 s)"
-            checked={thorough}
-            disabled={scan.running}
-            onChange={(_, d) => setThorough(d.checked)}
+            label="Porty"
+            checked={canPorts && ports}
+            disabled={scan.running || !canPorts}
+            onChange={(_, d) => setPorts(d.checked)}
           />
+          <InfoTip label="Co dělá skenování portů">
+            <InfoItem title="Porty">Zkusí navázat TCP spojení na 16 běžných portů každého nalezeného zařízení (web, SSH, RDP, tiskárna, kamera…). Pomáhá poznat typ zařízení a ukáže odezvu, ale je to přesně to, co firewally a systémy IDS hlásí jako port scan. V režimech Tichý a Opatrný je vypnuto.</InfoItem>
+          </InfoTip>
           {scan.running ? (
             <Button icon={<Stop20Regular />} onClick={cancelScan}>Zastavit</Button>
           ) : (
-            <Button appearance="primary" icon={<Play20Regular />} disabled={!effective.trim()} onClick={() => startScan(effective, thorough)}>Skenovat</Button>
+            <Button appearance="primary" icon={<Play20Regular />} disabled={!effective.trim()} onClick={go}>Skenovat</Button>
           )}
         </div>
         {(scan.running || scan.progress) && (
@@ -123,18 +167,24 @@ export default memo(function Scan() {
         )}
       </Card>
 
+      <div className={c.actions}>
+        <SearchBox value={query} onChange={setQuery} placeholder="Hledat (IP, MAC, výrobce, jméno, model, typ…)" />
+        <ColumnMenu cols={COLS} shown={shownCols} onChange={setCols} />
+        {query && <Text size={200} className={c.muted}>{hosts.length} z {allHosts.length}</Text>}
+      </div>
+
       <Card className={c.scroll}>
         <table className="ns-table" aria-label="Výsledky skenu">
           <thead>
             <tr>
               <th>IP</th>
-              <th className={c.hideXNarrow}>MAC</th>
-              <th>Výrobce</th>
-              <th>Jméno</th>
-              <th className={c.hideNarrow}>Model</th>
-              <th className={c.hideXNarrow}>Typ</th>
-              <th className={c.hideNarrow}>Porty</th>
-              <th className={c.hideNarrow}>ms</th>
+              {col("mac") && <th className={c.hideXNarrow}>MAC</th>}
+              {col("vendor") && <th>Výrobce</th>}
+              {col("name") && <th>Jméno</th>}
+              {col("model") && <th className={c.hideNarrow}>Model</th>}
+              {col("kind") && <th className={c.hideXNarrow}>Typ</th>}
+              {col("ports") && <th className={c.hideNarrow}>Porty</th>}
+              {col("ms") && <th className={c.hideNarrow}>ms</th>}
               <th />
             </tr>
           </thead>
@@ -142,15 +192,17 @@ export default memo(function Scan() {
             {hosts.map((h) => (
               <tr key={h.ip} className={selected === h.mac ? "sel" : ""} onClick={() => setSelected(h.mac)}>
                 <td className={c.mono}>{h.ip}</td>
-                <td className={mergeClasses(c.mono, c.hideXNarrow)}>{h.mac}</td>
-                <td title={h.private_mac ? "Soukromá (náhodná) MAC adresa: telefony a tablety ji používají místo skutečné, výrobce nelze určit" : undefined}>
-                  {h.vendor ?? (h.private_mac ? "Soukromá MAC" : "—")}
-                </td>
-                <td>{nameOf(h) || "—"}</td>
-                <td className={c.hideNarrow}>{h.model ?? "—"}</td>
-                <td className={c.hideXNarrow}>{h.kind ?? "—"}</td>
-                <td className={mergeClasses(c.mono, c.hideNarrow)}>{h.ports.join(", ") || "—"}</td>
-                <td className={c.hideNarrow}>{h.latency_ms || "—"}</td>
+                {col("mac") && <td className={mergeClasses(c.mono, c.hideXNarrow)}>{h.mac}</td>}
+                {col("vendor") && (
+                  <td title={h.private_mac ? "Soukromá (náhodná) MAC adresa: telefony a tablety ji používají místo skutečné, výrobce nelze určit" : undefined}>
+                    {h.vendor ?? (h.private_mac ? "Soukromá MAC" : "—")}
+                  </td>
+                )}
+                {col("name") && <td>{nameOf(h) || "—"}</td>}
+                {col("model") && <td className={c.hideNarrow}>{h.model ?? "—"}</td>}
+                {col("kind") && <td className={c.hideXNarrow}>{h.kind ?? "—"}</td>}
+                {col("ports") && <td className={mergeClasses(c.mono, c.hideNarrow)}>{h.ports.join(", ") || "—"}</td>}
+                {col("ms") && <td className={c.hideNarrow}>{h.latency_ms || "—"}</td>}
                 <td>
                   <div className={c.actions} style={{ flexWrap: "nowrap", gap: 2 }}>
                     {webPort(h) && <IconBtn label="Otevřít web" onClick={(e) => { e.stopPropagation(); api.openWeb(h.ip, webPort(h)!).catch(fail); }}><Globe20Regular /></IconBtn>}
@@ -162,7 +214,7 @@ export default memo(function Scan() {
             ))}
             {hosts.length === 0 && (
               <tr>
-                <td colSpan={9}><Text className={c.muted}>{scan.running ? "Hledám zařízení…" : "Žádné výsledky. Vyber podsíť a spusť sken."}</Text></td>
+                <td colSpan={9}><Text className={c.muted}>{allHosts.length ? "Hledání nic nenašlo." : scan.running ? "Hledám zařízení…" : "Žádné výsledky. Vyber podsíť a spusť sken."}</Text></td>
               </tr>
             )}
           </tbody>

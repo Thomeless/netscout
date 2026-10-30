@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "netscout-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dns-lookup",
  "libloading 0.9.0",

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct Meta {
@@ -49,8 +49,7 @@ pub struct Seen {
 pub type Db = HashMap<String, Meta>;
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {
-    let d = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    let d = crate::portable::data_dir(app)?;
     Ok(d.join("inventory.json"))
 }
 

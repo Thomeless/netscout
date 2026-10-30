@@ -19,7 +19,9 @@ export function useMediaQuery(query: string): boolean {
 export const NARROW = "(max-width: 1100px)";
 
 export const useCommon = makeStyles({
-  page: { display: "flex", flexDirection: "column", gap: "16px", padding: "20px 24px 24px", minWidth: 0 },
+  page: { display: "flex", flexDirection: "column", gap: "16px", padding: "20px 24px 24px", minWidth: 0, flexShrink: 0 },
+  // Stránka s tabulkou vyplní okno: tabulka se posouvá uvnitř a okno se podle počtu řádků nemění.
+  pageFill: { flexShrink: 1, flexGrow: 1, minHeight: 0, overflow: "hidden" },
   head: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "12px", justifyContent: "space-between" },
   actions: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" },
   card: {
@@ -30,7 +32,7 @@ export const useCommon = makeStyles({
     minWidth: 0,
   },
   pad: { padding: "16px" },
-  scroll: { overflowX: "auto", overflowY: "visible" },
+  scroll: { overflow: "auto", flex: "1 1 auto", minHeight: 0 },
   split: {
     display: "grid",
     gridTemplateColumns: "minmax(0, 1fr) 380px",
@@ -38,6 +40,8 @@ export const useCommon = makeStyles({
     alignItems: "start",
     "@media (max-width: 1100px)": { gridTemplateColumns: "minmax(0, 1fr)" },
   },
+  splitFill: { flex: "1 1 auto", minHeight: 0, alignItems: "stretch", gridTemplateRows: "minmax(0, 1fr)" },
+  sideCard: { overflow: "auto", minHeight: 0 },
   grow: { flex: "1 1 220px", minWidth: "160px" },
   kv: { display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: "6px 12px", margin: 0 },
   kvKey: { color: tokens.colorNeutralForeground3 },
@@ -60,10 +64,10 @@ export const useCommon = makeStyles({
   },
 });
 
-export function Page({ title, subtitle, actions, children }: { title: string; subtitle?: string; actions?: ReactNode; children: ReactNode }) {
+export function Page({ title, subtitle, actions, children, fill }: { title: string; subtitle?: string; actions?: ReactNode; children: ReactNode; fill?: boolean }) {
   const c = useCommon();
   return (
-    <div className={c.page}>
+    <div className={mergeClasses(c.page, fill && c.pageFill)}>
       <div className={c.head}>
         <div>
           <Subtitle1 as="h1" block>{title}</Subtitle1>

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tomáš Nesrsta
 import { useEffect, useReducer, useRef, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type Host, type Iface, type Lease, type Meta, type MikrotikSettings, type Neighbor, type SeenEntry } from "./api";
+import { api, type ScanMode, type Host, type Iface, type Lease, type Meta, type MikrotikSettings, type Neighbor, type SeenEntry } from "./api";
 
 export type SeenHost = Host & { seen: number };
 export type SeenNeighbor = Neighbor & { seen: number };
@@ -23,7 +23,7 @@ export interface State {
   ifacesError: string | null;
   admin: boolean | null;
   scan: { running: boolean; progress: { done: number; total: number } | null; error: string | null };
-  nb: { running: boolean; warn: string | null; error: string | null };
+  nb: { running: boolean; active: boolean; warn: string | null; error: string | null };
 }
 
 let state: State = {
@@ -38,7 +38,7 @@ let state: State = {
   ifacesError: null,
   admin: null,
   scan: { running: false, progress: null, error: null },
-  nb: { running: false, warn: null, error: null },
+  nb: { running: false, active: false, warn: null, error: null },
 };
 
 const subs = new Set<() => void>();
@@ -169,10 +169,10 @@ export function refreshLeases(): Promise<void> {
   return leasesInFlight;
 }
 
-export async function startScan(range: string, thorough: boolean) {
+export async function startScan(range: string, mode: ScanMode, ports: boolean) {
   set({ hosts: {}, scan: { running: false, progress: null, error: null } });
   try {
-    await api.startScan(range, thorough);
+    await api.startScan(range, mode, ports);
     set({ scan: { ...state.scan, running: true } });
   } catch (e) {
     set({ scan: { ...state.scan, error: String(e) } });
@@ -183,14 +183,24 @@ export const cancelScan = () => api.cancelScan();
 export const clearHosts = () => set({ hosts: {} });
 export const clearNeighbors = () => set({ neighbors: {} });
 
-export async function startNeighbors() {
-  set({ nb: { running: false, warn: null, error: null } });
+/** `active`: kromě poslechu odešle pár dávek dotazů; bez něj jen poslouchá a nic neodesílá. */
+export async function startNeighbors(active = false) {
+  set({ nb: { running: false, active, warn: null, error: null } });
   try {
-    await api.startNeighbors();
+    await api.startNeighbors(active);
     set({ nb: { ...state.nb, running: true } });
   } catch (e) {
     set({ nb: { ...state.nb, error: String(e) } });
   }
+}
+
+/** Přepne poslech / aktivní hledání: zastaví běžící discovery a spustí novou. */
+export async function restartNeighbors(active: boolean) {
+  if (state.nb.running) {
+    api.stopNeighbors();
+    for (let i = 0; i < 40 && (await api.neighborsRunning()); i++) await new Promise((r) => setTimeout(r, 100));
+  }
+  await startNeighbors(active);
 }
 
 export const stopNeighbors = () => api.stopNeighbors();
@@ -234,6 +244,6 @@ export function initStore() {
   api.inventoryLoad().then((metas) => set({ metas }), () => {});
   refreshIfaces();
   refreshLeases();
-  // Discovery běží od startu aplikace.
-  api.neighborsRunning().then((r) => (r ? set({ nb: { ...state.nb, running: true } }) : startNeighbors()), () => {});
+  // Od startu se jen poslouchá (nic se neodesílá); aktivní hledání spouští uživatel.
+  api.neighborsRunning().then((r) => (r ? set({ nb: { ...state.nb, running: true } }) : startNeighbors(false)), () => {});
 }

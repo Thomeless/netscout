@@ -13,12 +13,48 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-#[cfg(test)]
 use windows_sys::Win32::NetworkManagement::IpHelper::SendARP;
 
 const MAX_HOSTS: u32 = 65_536;
 const REPORT_THREADS: usize = 24;
 const PORTS: &[u16] = &[21, 22, 23, 53, 80, 139, 443, 445, 554, 3389, 8000, 8080, 8291, 8728, 9100, 37777];
+
+/// Režim skenu od nejtišího po nejhlasitější.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Nic neodesílá: čte ARP tabulku Windows a poslouchá mDNS oznámení.
+    Quiet,
+    /// Jen ARP dotazy v malé rychlosti a náhodném pořadí, bez UDP sweepu a bez skenu portů.
+    Careful,
+    /// ARP vyvolaný UDP „šťouchnutím“, mDNS a UPnP dotazy.
+    Normal,
+    /// Jako běžný, ale čeká déle (zařízení v úsporném režimu).
+    Thorough,
+}
+
+impl Mode {
+    pub fn parse(s: &str) -> Result<Mode, String> {
+        match s {
+            "quiet" => Ok(Mode::Quiet),
+            "careful" => Ok(Mode::Careful),
+            "normal" => Ok(Mode::Normal),
+            "thorough" => Ok(Mode::Thorough),
+            other => Err(format!("Neznámý režim skenu: {other}")),
+        }
+    }
+}
+
+/// Náhodné pořadí adres, aby sken nevypadal jako souvislé procházení rozsahu.
+fn shuffled(mut v: Vec<u32>) -> Vec<u32> {
+    let mut x = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
+    for i in (1..v.len()).rev() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        v.swap(i, (x % (i as u64 + 1)) as usize);
+    }
+    v
+}
 
 #[derive(Default)]
 pub struct ScanControl {
@@ -116,8 +152,7 @@ fn find_source(start: u32, end: u32, ifaces: &[netcfg::Iface]) -> Result<Ipv4Add
     Err("Rozsah není v lokální podsíti žádného aktivního rozhraní (zatím je podporován jen ARP sken lokální sítě)".into())
 }
 
-/// Jednotlivý ARP dotaz přes SendARP (jen pro diagnostické testy; při souběhu je nespolehlivý).
-#[cfg(test)]
+/// Jednotlivý ARP dotaz přes SendARP: v opatrném režimu jediný provoz, který sken vyvolá.
 fn arp(src: Ipv4Addr, dst: Ipv4Addr) -> Option<([u8; 6], u32)> {
     let mut mac = [0u32; 2];
     let mut len: u32 = 6;
@@ -326,21 +361,18 @@ fn discover(
     src: Ipv4Addr,
     s: u32,
     e: u32,
-    thorough: bool,
+    mode: Mode,
     cancelled: &(dyn Fn() -> bool + Sync),
-    poked: &dyn Fn(),
-    early: &dyn Fn(u32, [u8; 6]),
+    progress: &(dyn Fn(usize) + Sync),
+    early: &(dyn Fn(u32, [u8; 6]) + Sync),
 ) -> Discovered {
-    let sock = UdpSocket::bind((src, 0)).ok();
-    let poke = |skip: &HashSet<u32>| {
-        let Some(sock) = &sock else { return };
-        for ip in s..=e {
-            if cancelled() {
-                break;
-            }
-            if !skip.contains(&ip) {
-                let _ = sock.send_to(&[0u8], (Ipv4Addr::from(ip), 9));
-            }
+    let n = (e - s + 1) as usize;
+    let in_range = || arp_table().into_iter().filter(|(ip, _)| (s..=e).contains(ip)).collect::<Vec<_>>();
+    let announced: Mutex<HashSet<u32>> = Mutex::new(HashSet::new());
+    let announce = |ip: u32, mac: [u8; 6]| {
+        // Nově nalezená zařízení se ukážou hned, doplnění údajů přijde po skončení průzkumu.
+        if announced.lock().unwrap().insert(ip) {
+            early(ip, mac);
         }
     };
     let wait = |ms: u64| {
@@ -349,37 +381,97 @@ fn discover(
             std::thread::sleep(Duration::from_millis(100));
         }
     };
-    let in_range = || arp_table().into_iter().filter(|(ip, _)| (s..=e).contains(ip)).collect::<Vec<_>>();
-    let pauses: &[u64] = if thorough { &[3000, 3000, 3000, 3000, 3000, 3000, 2000] } else { &[2500, 2500, 2000] };
-    let probe_time = Duration::from_millis(pauses.iter().sum::<u64>().saturating_sub(1500));
 
-    let (mdns, upnp, list) = std::thread::scope(|scope| {
-        let m = scope.spawn(|| mdns::probe(src, probe_time, cancelled));
-        let u = scope.spawn(|| ssdp::probe(src, probe_time, cancelled));
-        poke(&HashSet::new());
-        poked();
-        let mut announced: HashSet<u32> = HashSet::new();
-        for (i, pause) in pauses.iter().enumerate() {
-            wait(*pause);
-            // Nově nalezená zařízení se ukážou hned, doplnění údajů přijde po skončení průzkumu.
-            let current = in_range();
-            for (ip, mac) in &current {
-                if announced.insert(*ip) {
-                    early(*ip, *mac);
+    match mode {
+        Mode::Quiet => {
+            let listen = Duration::from_secs(12);
+            let mdns = std::thread::scope(|scope| {
+                let m = scope.spawn(|| mdns::listen(src, listen, cancelled));
+                progress(n);
+                let end = Instant::now() + listen;
+                while Instant::now() < end && !cancelled() {
+                    for (ip, mac) in in_range() {
+                        announce(ip, mac);
+                    }
+                    wait(1000);
                 }
-            }
-            if i + 1 < pauses.len() {
-                let resolved: HashSet<u32> = current.iter().map(|(ip, _)| *ip).collect();
-                poke(&resolved);
-            }
+                m.join().unwrap_or_default()
+            });
+            Discovered { list: in_range(), mdns, upnp: HashMap::new() }
         }
-        let (m, u) = (m.join().unwrap_or_default(), u.join().unwrap_or_default());
-        (m, u, in_range())
-    });
-    Discovered { list, mdns, upnp }
+        Mode::Careful => {
+            // Jediný odeslaný provoz jsou ARP dotazy (SendARP), nejvýš 12 dotazů najednou, v náhodném pořadí.
+            let order = shuffled((s..=e).collect());
+            let next = AtomicUsize::new(0);
+            let done = AtomicUsize::new(0);
+            let mdns = std::thread::scope(|scope| {
+                let m = scope.spawn(|| mdns::listen(src, Duration::from_secs(25), cancelled));
+                for _ in 0..12 {
+                    scope.spawn(|| loop {
+                        let k = next.fetch_add(1, Ordering::SeqCst);
+                        if k >= order.len() || cancelled() {
+                            break;
+                        }
+                        let ip = Ipv4Addr::from(order[k]);
+                        if ip != src {
+                            if let Some((mac, _)) = arp(src, ip) {
+                                if mac[0] & 1 == 0 && mac != [0; 6] {
+                                    announce(order[k], mac);
+                                }
+                            }
+                        }
+                        progress(done.fetch_add(1, Ordering::SeqCst) + 1);
+                        std::thread::sleep(Duration::from_millis(200 + (k as u64 * 37) % 200));
+                    });
+                }
+                m.join().unwrap_or_default()
+            });
+            progress(n);
+            Discovered { list: in_range(), mdns, upnp: HashMap::new() }
+        }
+        Mode::Normal | Mode::Thorough => {
+            // `SendARP` se při souběžném použití ukázal jako nespolehlivý (ARP dotazy se ztrácely),
+            // proto systém donutíme poslat ARP dotazy sám: prázdný UDP datagram na každou adresu spustí
+            // překlad adresy v síťovém zásobníku (s jeho vlastním opakováním) a pak přečteme ARP tabulku.
+            let sock = UdpSocket::bind((src, 0)).ok();
+            let poke = |skip: &HashSet<u32>| {
+                let Some(sock) = &sock else { return };
+                for ip in s..=e {
+                    if cancelled() {
+                        break;
+                    }
+                    if !skip.contains(&ip) {
+                        let _ = sock.send_to(&[0u8], (Ipv4Addr::from(ip), 9));
+                    }
+                }
+            };
+            let pauses: &[u64] = if mode == Mode::Thorough { &[3000, 3000, 3000, 3000, 3000, 3000, 2000] } else { &[2500, 2500, 2000] };
+            let probe_time = Duration::from_millis(pauses.iter().sum::<u64>().saturating_sub(1500));
+            let (mdns, upnp, list) = std::thread::scope(|scope| {
+                let m = scope.spawn(|| mdns::probe(src, probe_time, cancelled));
+                let u = scope.spawn(|| ssdp::probe(src, probe_time, cancelled));
+                poke(&HashSet::new());
+                progress(n);
+                for (i, pause) in pauses.iter().enumerate() {
+                    wait(*pause);
+                    let current = in_range();
+                    for (ip, mac) in &current {
+                        announce(*ip, *mac);
+                    }
+                    if i + 1 < pauses.len() {
+                        let resolved: HashSet<u32> = current.iter().map(|(ip, _)| *ip).collect();
+                        poke(&resolved);
+                    }
+                }
+                let (m, u) = (m.join().unwrap_or_default(), u.join().unwrap_or_default());
+                (m, u, in_range())
+            });
+            Discovered { list, mdns, upnp }
+        }
+    }
 }
 
-pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String, thorough: bool) -> Result<(), String> {
+pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String, mode: Mode, ports_scan: bool) -> Result<(), String> {
     if ctl.running.swap(true, Ordering::SeqCst) {
         return Err("Sken již běží".into());
     }
@@ -414,10 +506,10 @@ pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String, thorough: boo
             src,
             s,
             e,
-            thorough,
+            mode,
             &cancelled,
-            &|| {
-                done.store(n, Ordering::SeqCst);
+            &|k| {
+                done.store(k.min(n), Ordering::SeqCst);
                 progress();
             },
             &|v, mac| {
@@ -506,9 +598,12 @@ pub fn start(app: AppHandle, ctl: Arc<ScanControl>, range: String, thorough: boo
                         latency_ms: 0,
                     };
                     let _ = app.emit("scan-host", host.clone());
-                    let (ports, latency) = open_ports(ip);
+                    let (ports, latency) = if ports_scan { open_ports(ip) } else { (vec![], None) };
                     host.latency_ms = latency.unwrap_or(0);
-                    host.hostname = reverse_dns(ip);
+                    // Tichý režim nic neodesílá, tedy ani dotazy na DNS.
+                    if mode != Mode::Quiet {
+                        host.hostname = reverse_dns(ip);
+                    }
                     if let Some(port) = [80u16, 8080, 8000].into_iter().find(|p| ports.contains(p)) {
                         let (title, server) = http_probe(ip, port);
                         host.web_title = title;
@@ -619,7 +714,7 @@ mod tests {
         let base = u32::from(src) & !0xff;
         for run in 1..=3 {
             let t = Instant::now();
-            let found = discover(src, base + 1, base + 254, false, &|| false, &|| {}, &|_, _| {}).list;
+            let found = discover(src, base + 1, base + 254, Mode::Normal, &|| false, &|_| {}, &|_, _| {}).list;
             let mut ips: Vec<String> = found.iter().map(|(ip, _)| Ipv4Addr::from(*ip).to_string().rsplit('.').next().unwrap().to_string()).collect();
             ips.sort_by_key(|x| x.parse::<u32>().unwrap());
             println!("běh {run}: {} zařízení za {} ms: {}", found.len(), t.elapsed().as_millis(), ips.join(","));
@@ -636,5 +731,25 @@ mod tests {
         let gw: Ipv4Addr = i.gateway.clone().unwrap().parse().unwrap();
         let (mac, ms) = arp(src, gw).expect("brána neodpověděla");
         println!("GW {gw} -> {} ({ms} ms)", fmt_mac(&mac));
+    }
+
+    /// Živý test: porovná počet nalezených zařízení v jednotlivých režimech (potřebuje reálnou síť).
+    #[test]
+    #[ignore]
+    fn live_modes() {
+        let ifaces = netcfg::list_interfaces().unwrap();
+        let src = ifaces
+            .iter()
+            .filter(|i| i.status == "Up")
+            .flat_map(|i| i.addresses.iter())
+            .find_map(|a| a.ip.parse::<Ipv4Addr>().ok().filter(|ip| !ip.is_link_local() && (16..=24).contains(&a.prefix)))
+            .expect("rozhraní s podsítí /16–/24");
+        let base = u32::from(src) & !0xff;
+        // Běžný režim se záměrně nezkouší: test může běžet na cizí síti s ochranou proti skenování.
+        for mode in [Mode::Quiet, Mode::Careful] {
+            let t = Instant::now();
+            let d = discover(src, base + 1, base + 254, mode, &|| false, &|_| {}, &|_, _| {});
+            println!("{mode:?}: {} zařízení, mDNS {}, {} s", d.list.len(), d.mdns.len(), t.elapsed().as_secs());
+        }
     }
 }

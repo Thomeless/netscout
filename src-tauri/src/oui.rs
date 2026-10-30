@@ -6,14 +6,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 static EMBEDDED: &[u8] = include_bytes!("../resources/oui.csv");
 
 pub type Db =HashMap<[u8; 3], String>;
 
 pub fn path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("oui.csv"))
+    Ok(crate::portable::data_dir(app)?.join("oui.csv"))
 }
 
 fn split_csv(line: &str) -> Vec<String> {

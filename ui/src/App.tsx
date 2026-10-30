@@ -50,7 +50,9 @@ const useStyles = makeStyles({
   main: {
     flex: 1,
     minWidth: 0,
-    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
     backgroundColor: tokens.colorNeutralBackground2,
     borderTopLeftRadius: tokens.borderRadiusXLarge,
     borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
@@ -110,7 +112,7 @@ export default function App() {
             <div
               key={t.id}
               // content-visibility: hidden zachová vykreslený stav skryté stránky, takže návrat na ni je okamžitý (display: none by ho zahodil).
-              style={tab === t.id ? undefined : { contentVisibility: "hidden", height: 0, overflow: "hidden" }}
+              style={tab === t.id ? { flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto" } : { contentVisibility: "hidden", height: 0, flex: "none", overflow: "hidden" }}
               aria-hidden={tab !== t.id}
             >
               {pages[t.id]}

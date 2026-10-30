@@ -11,9 +11,13 @@ Nástroj pro IT adminy a správce sítí (Windows, Rust + Tauri + React, Fluent 
 
 - **Inventář** – sloučený přehled zařízení ze skenu a neighbour discovery podle MAC adresy; vlastní názvy, poznámky, oblíbené, uložené offline záznamy, export CSV.
 - **IP profily** – uložené konfigurace IPv4 (statická / DHCP) pro síťové karty, použití jedním kliknutím, tlačítko Zpět.
-- **Sken sítě** – ARP sken lokální podsítě doplněný o mDNS a UPnP: výrobce (IEEE OUI), jméno, model, nabízené služby, titulek webu, porty, odhad typu zařízení (tiskárny, Google Nest, Apple TV, kamery, telefony se soukromou MAC…), volitelný důkladný režim pro zařízení v úsporném režimu, detail zařízení, export CSV.
-- **DHCP z routeru MikroTik** – volitelně (Zdroje dat): jméno hostitele, Class ID, Client ID a komentář z DHCP leasů přes RouterOS API (port 8728); údaje se přidají ke skenu a do inventáře.
-- **Neighbors** – MikroTik MNDP, Ubiquiti discovery, Hikvision SADP, ONVIF WS-Discovery, Cisco CDP a LLDP (ty vyžadují [Npcap](https://npcap.com)).
+- **Sken sítě** – čtyři režimy podle toho, kolik provozu smí vyvolat (Tichý: nic neodesílá; Opatrný, výchozí: jen ARP dotazy; Běžný; Důkladný), samostatně volitelný sken portů, hledání a výběr sloupců. Používá ARP, mDNS a UPnP: výrobce (IEEE OUI), jméno, model, nabízené služby, titulek webu, porty, odhad typu zařízení (tiskárny, Google Nest, Apple TV, kamery, telefony se soukromou MAC…), volitelný důkladný režim pro zařízení v úsporném režimu, detail zařízení, export CSV.
+- **DHCP z routeru MikroTik** – volitelně (tlačítko Router): jméno hostitele, Class ID, Client ID a komentář z DHCP leasů přes RouterOS API (port 8728); údaje se přidají ke skenu a do inventáře.
+- **Neighbors** – ve výchozím stavu jen poslouchá (nic neodesílá), „Hledat aktivně“ pošle krátkou dávku dotazů. MikroTik MNDP, Ubiquiti discovery, Hikvision SADP, ONVIF WS-Discovery, Cisco CDP a LLDP (ty vyžadují [Npcap](https://npcap.com)).
+
+## Přenosná verze
+
+Z vydání stáhni `NetScout_*_portable.zip`, rozbal a spusť `NetScout.exe` (vyžaduje práva správce). Soubor `portable` vedle programu zapíná přenosný režim: veškerá data (profily, inventář, nastavení) se ukládají do složky `data` vedle programu a nic se nezapisuje do profilu uživatele. Aktualizace přenosné verze se stahují ručně z GitHubu.
 
 ## Vývoj
 
