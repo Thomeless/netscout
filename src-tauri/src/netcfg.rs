@@ -8,8 +8,18 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// PowerShell u rozhraní uprostřed (od)připojení občas vrátí `null` místo textu; bereme to jako prázdný text.
+fn null_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
+fn null_strs<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<Vec<Option<String>>>::deserialize(d)?.unwrap_or_default().into_iter().flatten().collect())
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Addr {
+    #[serde(deserialize_with = "null_str")]
     pub ip: String,
     pub prefix: u8,
 }
@@ -35,16 +45,20 @@ pub struct IpConfig {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Iface {
+    #[serde(deserialize_with = "null_str")]
     pub name: String,
+    #[serde(default, deserialize_with = "null_str")]
     pub description: String,
+    #[serde(default, deserialize_with = "null_str")]
     pub mac: String,
+    #[serde(default, deserialize_with = "null_str")]
     pub status: String,
     pub index: u32,
     pub dhcp: bool,
     #[serde(default)]
     pub addresses: Vec<Addr>,
     pub gateway: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_strs")]
     pub dns: Vec<String>,
 }
 
@@ -128,12 +142,22 @@ pub fn validate(cfg: &IpConfig) -> Result<(), String> {
 const APPLY_SCRIPT: &str = r#"
 $a = Get-NetAdapter -Name $env:NA_IFACE
 $idx = $a.ifIndex
-Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false
-Remove-NetRoute -InterfaceIndex $idx -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue
+# Wi-Fi a další adaptéry po (od)připojení na chvíli nemají IPv4 rozhraní; chvíli na ně počkáme.
+for ($t = 0; $t -lt 20 -and -not (Get-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue); $t++) { Start-Sleep -Milliseconds 500 }
+if (-not (Get-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue)) { throw "Adaptér '$($a.Name)' teď nemá IPv4 rozhraní (není připojený nebo se právě připojuje). Zkus to za chvíli znovu." }
+function Retry($sb) {
+  for ($i = 0; $i -lt 10; $i++) { try { & $sb; return } catch { if ($i -eq 9) { throw }; Start-Sleep -Seconds 1 } }
+}
 if ($env:NA_MODE -eq 'dhcp') {
-  Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Enabled
-  Set-DnsClientServerAddress -InterfaceIndex $idx -ResetServerAddresses
+  # Nejdřív zapnout DHCP, teprve potom mazat ruční nastavení: po odebrání poslední adresy Wi-Fi adaptér
+  # na chvíli ztratí IPv4 rozhraní a Set-NetIPInterface by selhal.
+  Retry { Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Enabled }
+  Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+  Get-NetRoute -InterfaceIndex $idx -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.Protocol -eq 'NetMgmt' } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+  Retry { Set-DnsClientServerAddress -InterfaceIndex $idx -ResetServerAddresses }
 } else {
+  Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -eq 'Manual' } | Remove-NetIPAddress -Confirm:$false
+  Remove-NetRoute -InterfaceIndex $idx -DestinationPrefix '0.0.0.0/0' -Confirm:$false -ErrorAction SilentlyContinue
   Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled
   $first = $true
   foreach ($item in ($env:NA_ADDRS -split ';' | Where-Object { $_ })) {
@@ -170,4 +194,18 @@ pub fn apply(iface: &str, cfg: &IpConfig) -> Result<(), String> {
     .map(|_| {
         *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_fields_from_powershell_are_tolerated() {
+        let json = r#"[{"name":"Wi-Fi","description":null,"mac":null,"status":"Up","index":18,"dhcp":false,
+            "addresses":[{"ip":null,"prefix":24}],"gateway":null,"dns":[null,"1.1.1.1"]}]"#;
+        let l: Vec<Iface> = serde_json::from_str(json).unwrap();
+        assert_eq!(l[0].mac, "");
+        assert_eq!(l[0].dns, vec!["1.1.1.1".to_string()]);
+    }
 }
